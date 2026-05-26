@@ -1,6 +1,6 @@
 //
-//  FloatCalApp.swift
-//  FloatCal
+//  DynocalApp.swift
+//  Dynocal
 //
 //  Created by Maddie Smith on 5/22/26.
 //
@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct FloatCalApp: App {
+struct DynocalApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

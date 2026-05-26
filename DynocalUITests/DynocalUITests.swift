@@ -1,13 +1,13 @@
 //
-//  FloatCalUITests.swift
-//  FloatCalUITests
+//  DynocalUITests.swift
+//  DynocalUITests
 //
 //  Created by Maddie Smith on 5/22/26.
 //
 
 import XCTest
 
-final class FloatCalUITests: XCTestCase {
+final class DynocalUITests: XCTestCase {
 
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.

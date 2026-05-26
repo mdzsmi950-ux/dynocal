@@ -12,37 +12,37 @@
 			containerPortal = 4E665E742FC1681400641B62 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 4E665E7B2FC1681400641B62;
-			remoteInfo = FloatCal;
+			remoteInfo = Dynocal;
 		};
 		4E665E942FC1681800641B62 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4E665E742FC1681400641B62 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 4E665E7B2FC1681400641B62;
-			remoteInfo = FloatCal;
+			remoteInfo = Dynocal;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		4E665E7C2FC1681400641B62 /* FloatCal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FloatCal.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		4E665E892FC1681800641B62 /* FloatCalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FloatCalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		4E665E932FC1681800641B62 /* FloatCalUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FloatCalUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4E665E7C2FC1681400641B62 /* Dynocal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dynocal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4E665E892FC1681800641B62 /* DynocalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DynocalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4E665E932FC1681800641B62 /* DynocalUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DynocalUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		4E665E7E2FC1681400641B62 /* FloatCal */ = {
+		4E665E7E2FC1681400641B62 /* Dynocal */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = FloatCal;
+			path = Dynocal;
 			sourceTree = "<group>";
 		};
-		4E665E8C2FC1681800641B62 /* FloatCalTests */ = {
+		4E665E8C2FC1681800641B62 /* DynocalTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = FloatCalTests;
+			path = DynocalTests;
 			sourceTree = "<group>";
 		};
-		4E665E962FC1681800641B62 /* FloatCalUITests */ = {
+		4E665E962FC1681800641B62 /* DynocalUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = FloatCalUITests;
+			path = DynocalUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -75,9 +75,9 @@
 		4E665E732FC1681400641B62 = {
 			isa = PBXGroup;
 			children = (
-				4E665E7E2FC1681400641B62 /* FloatCal */,
-				4E665E8C2FC1681800641B62 /* FloatCalTests */,
-				4E665E962FC1681800641B62 /* FloatCalUITests */,
+				4E665E7E2FC1681400641B62 /* Dynocal */,
+				4E665E8C2FC1681800641B62 /* DynocalTests */,
+				4E665E962FC1681800641B62 /* DynocalUITests */,
 				4E665E7D2FC1681400641B62 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -85,9 +85,9 @@
 		4E665E7D2FC1681400641B62 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				4E665E7C2FC1681400641B62 /* FloatCal.app */,
-				4E665E892FC1681800641B62 /* FloatCalTests.xctest */,
-				4E665E932FC1681800641B62 /* FloatCalUITests.xctest */,
+				4E665E7C2FC1681400641B62 /* Dynocal.app */,
+				4E665E892FC1681800641B62 /* DynocalTests.xctest */,
+				4E665E932FC1681800641B62 /* DynocalUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -95,9 +95,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		4E665E7B2FC1681400641B62 /* FloatCal */ = {
+		4E665E7B2FC1681400641B62 /* Dynocal */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4E665E9D2FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCal" */;
+			buildConfigurationList = 4E665E9D2FC1681800641B62 /* Build configuration list for PBXNativeTarget "Dynocal" */;
 			buildPhases = (
 				4E665E782FC1681400641B62 /* Sources */,
 				4E665E792FC1681400641B62 /* Frameworks */,
@@ -108,18 +108,18 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				4E665E7E2FC1681400641B62 /* FloatCal */,
+				4E665E7E2FC1681400641B62 /* Dynocal */,
 			);
-			name = FloatCal;
+			name = Dynocal;
 			packageProductDependencies = (
 			);
-			productName = FloatCal;
-			productReference = 4E665E7C2FC1681400641B62 /* FloatCal.app */;
+			productName = Dynocal;
+			productReference = 4E665E7C2FC1681400641B62 /* Dynocal.app */;
 			productType = "com.apple.product-type.application";
 		};
-		4E665E882FC1681800641B62 /* FloatCalTests */ = {
+		4E665E882FC1681800641B62 /* DynocalTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4E665EA02FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCalTests" */;
+			buildConfigurationList = 4E665EA02FC1681800641B62 /* Build configuration list for PBXNativeTarget "DynocalTests" */;
 			buildPhases = (
 				4E665E852FC1681800641B62 /* Sources */,
 				4E665E862FC1681800641B62 /* Frameworks */,
@@ -131,18 +131,18 @@
 				4E665E8B2FC1681800641B62 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				4E665E8C2FC1681800641B62 /* FloatCalTests */,
+				4E665E8C2FC1681800641B62 /* DynocalTests */,
 			);
-			name = FloatCalTests;
+			name = DynocalTests;
 			packageProductDependencies = (
 			);
-			productName = FloatCalTests;
-			productReference = 4E665E892FC1681800641B62 /* FloatCalTests.xctest */;
+			productName = DynocalTests;
+			productReference = 4E665E892FC1681800641B62 /* DynocalTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		4E665E922FC1681800641B62 /* FloatCalUITests */ = {
+		4E665E922FC1681800641B62 /* DynocalUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4E665EA32FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCalUITests" */;
+			buildConfigurationList = 4E665EA32FC1681800641B62 /* Build configuration list for PBXNativeTarget "DynocalUITests" */;
 			buildPhases = (
 				4E665E8F2FC1681800641B62 /* Sources */,
 				4E665E902FC1681800641B62 /* Frameworks */,
@@ -154,13 +154,13 @@
 				4E665E952FC1681800641B62 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				4E665E962FC1681800641B62 /* FloatCalUITests */,
+				4E665E962FC1681800641B62 /* DynocalUITests */,
 			);
-			name = FloatCalUITests;
+			name = DynocalUITests;
 			packageProductDependencies = (
 			);
-			productName = FloatCalUITests;
-			productReference = 4E665E932FC1681800641B62 /* FloatCalUITests.xctest */;
+			productName = DynocalUITests;
+			productReference = 4E665E932FC1681800641B62 /* DynocalUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -186,7 +186,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 4E665E772FC1681400641B62 /* Build configuration list for PBXProject "FloatCal" */;
+			buildConfigurationList = 4E665E772FC1681400641B62 /* Build configuration list for PBXProject "Dynocal" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -200,9 +200,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4E665E7B2FC1681400641B62 /* FloatCal */,
-				4E665E882FC1681800641B62 /* FloatCalTests */,
-				4E665E922FC1681800641B62 /* FloatCalUITests */,
+				4E665E7B2FC1681400641B62 /* Dynocal */,
+				4E665E882FC1681800641B62 /* DynocalTests */,
+				4E665E922FC1681800641B62 /* DynocalUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -258,12 +258,12 @@
 /* Begin PBXTargetDependency section */
 		4E665E8B2FC1681800641B62 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 4E665E7B2FC1681400641B62 /* FloatCal */;
+			target = 4E665E7B2FC1681400641B62 /* Dynocal */;
 			targetProxy = 4E665E8A2FC1681800641B62 /* PBXContainerItemProxy */;
 		};
 		4E665E952FC1681800641B62 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 4E665E7B2FC1681400641B62 /* FloatCal */;
+			target = 4E665E7B2FC1681400641B62 /* Dynocal */;
 			targetProxy = 4E665E942FC1681800641B62 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -395,11 +395,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Dynocal;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dynocal needs Calendar access to place tasks on your calendar and move them when plans change.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -410,7 +413,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCal;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.dynocal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -427,11 +430,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Dynocal;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dynocal needs Calendar access to place tasks on your calendar and move them when plans change.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -442,7 +448,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCal;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.dynocal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -464,7 +470,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCalTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.DynocalTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -472,7 +478,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FloatCal.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FloatCal";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Dynocal.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Dynocal";
 			};
 			name = Debug;
 		};
@@ -486,7 +492,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCalTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.DynocalTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -494,7 +500,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FloatCal.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FloatCal";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Dynocal.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Dynocal";
 			};
 			name = Release;
 		};
@@ -506,7 +512,7 @@
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCalUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.DynocalUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -514,7 +520,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = FloatCal;
+				TEST_TARGET_NAME = Dynocal;
 			};
 			name = Debug;
 		};
@@ -526,7 +532,7 @@
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.FloatCalUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maddie.DynocalUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -534,14 +540,14 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = FloatCal;
+				TEST_TARGET_NAME = Dynocal;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		4E665E772FC1681400641B62 /* Build configuration list for PBXProject "FloatCal" */ = {
+		4E665E772FC1681400641B62 /* Build configuration list for PBXProject "Dynocal" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4E665E9B2FC1681800641B62 /* Debug */,
@@ -550,7 +556,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4E665E9D2FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCal" */ = {
+		4E665E9D2FC1681800641B62 /* Build configuration list for PBXNativeTarget "Dynocal" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4E665E9E2FC1681800641B62 /* Debug */,
@@ -559,7 +565,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4E665EA02FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCalTests" */ = {
+		4E665EA02FC1681800641B62 /* Build configuration list for PBXNativeTarget "DynocalTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4E665EA12FC1681800641B62 /* Debug */,
@@ -568,7 +574,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4E665EA32FC1681800641B62 /* Build configuration list for PBXNativeTarget "FloatCalUITests" */ = {
+		4E665EA32FC1681800641B62 /* Build configuration list for PBXNativeTarget "DynocalUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4E665EA42FC1681800641B62 /* Debug */,

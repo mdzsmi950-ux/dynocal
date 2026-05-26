@@ -1,13 +1,13 @@
 //
-//  FloatCalUITestsLaunchTests.swift
-//  FloatCalUITests
+//  DynocalUITestsLaunchTests.swift
+//  DynocalUITests
 //
 //  Created by Maddie Smith on 5/22/26.
 //
 
 import XCTest
 
-final class FloatCalUITestsLaunchTests: XCTestCase {
+final class DynocalUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true
