@@ -12,6 +12,7 @@ struct ContentView: View {
 
     @State private var statusText: String?
     @State private var isCreatingTask = false
+    @State private var isRescheduling = false
     @State private var isShowingNewTaskSheet = false
     @State private var tasks: [DynocalTask] = []
     @State private var lastDeletedTask: DeletedTask?
@@ -21,19 +22,31 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if !calendarService.hasCalendarAccess {
-                    calendarAccessSection
-                } else {
-                    tasksSection
+            ZStack(alignment: .bottom) {
+                Form {
+                    if !calendarService.hasCalendarAccess {
+                        calendarAccessSection
+                    } else {
+                        tasksSection
+                    }
+
+                    if let statusText {
+                        Section {
+                            Label(statusText, systemImage: "info.circle")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Color.clear.frame(height: 118)
                 }
 
-                if let statusText {
-                    Section {
-                        Label(statusText, systemImage: "info.circle")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                if calendarService.hasCalendarAccess {
+                    PButton(isProcessing: isRescheduling) {
+                        rescheduleOverdueTasks()
                     }
+                    .padding(.bottom, 16)
                 }
             }
             .navigationTitle("Dynocal")
@@ -321,6 +334,30 @@ struct ContentView: View {
         }
     }
 
+    private func rescheduleOverdueTasks() {
+        guard !isRescheduling else { return }
+
+        isRescheduling = true
+        statusText = "Finding room for overdue tasks..."
+
+        do {
+            let result = try calendarService.rescheduleOverdueTasks()
+            refreshTasks()
+
+            if result.updatedTasks.isEmpty {
+                statusText = "You’re caught up — there are no overdue tasks."
+            } else if result.skippedConflicts {
+                statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
+            } else {
+                statusText = "Reflowed \(result.updatedTasks.count) overdue task(s)."
+            }
+        } catch {
+            statusText = "Could not reflow tasks: \(error.localizedDescription)"
+        }
+
+        isRescheduling = false
+    }
+
     private static func defaultTaskStartDate() -> Date {
         let calendar = Calendar.current
         let now = Date()
@@ -349,4 +386,132 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+}
+
+private struct PButton: View {
+    let isProcessing: Bool
+    let action: () -> Void
+
+    @State private var holdProgress = 0.0
+    @State private var orbitRotation = 0.0
+    @State private var didConfirm = false
+
+    private let holdDuration = 1.4
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .stroke(
+                        AngularGradient(
+                            colors: [.pink, .purple, .blue, .pink],
+                            center: .center
+                        ),
+                        style: StrokeStyle(lineWidth: 3, dash: [5, 8], dashPhase: 2)
+                    )
+                    .frame(width: 96, height: 96)
+                    .rotationEffect(.degrees(orbitRotation))
+                    .opacity(isProcessing ? 0.35 : 0.8)
+
+                Circle()
+                    .trim(from: 0, to: holdProgress)
+                    .stroke(
+                        AngularGradient(
+                            colors: [.white, .pink, .purple, .white],
+                            center: .center
+                        ),
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round)
+                    )
+                    .frame(width: 92, height: 92)
+                    .rotationEffect(.degrees(-90))
+
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [.purple, .indigo],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 78, height: 78)
+                    .shadow(color: .purple.opacity(0.45), radius: 14, y: 6)
+
+                if isProcessing {
+                    ProgressView()
+                        .tint(.white)
+                        .controlSize(.large)
+                } else if didConfirm {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    Text("P")
+                        .font(.system(size: 34, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+            }
+            .contentShape(Circle())
+            .onLongPressGesture(
+                minimumDuration: holdDuration,
+                maximumDistance: 70,
+                pressing: handlePressing,
+                perform: confirm
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reschedule overdue tasks")
+            .accessibilityHint("Press and hold to confirm. Release early to cancel.")
+            .accessibilityAddTraits(.isButton)
+            .allowsHitTesting(!isProcessing)
+
+            Text(isProcessing ? "Reflowing..." : "Hold to reflow")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .onAppear {
+            withAnimation(.linear(duration: 6).repeatForever(autoreverses: false)) {
+                orbitRotation = 360
+            }
+        }
+    }
+
+    private func handlePressing(_ isPressing: Bool) {
+        guard !isProcessing else { return }
+
+        if isPressing {
+            didConfirm = false
+            holdProgress = 0
+
+            withAnimation(.linear(duration: holdDuration)) {
+                holdProgress = 1
+            }
+        } else if !didConfirm {
+            withAnimation(.easeOut(duration: 0.2)) {
+                holdProgress = 0
+            }
+        }
+    }
+
+    private func confirm() {
+        guard !isProcessing else { return }
+
+        didConfirm = true
+        holdProgress = 1
+        action()
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(650))
+
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    didConfirm = false
+                    holdProgress = 0
+                }
+            }
+        }
+    }
 }

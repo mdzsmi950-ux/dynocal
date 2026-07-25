@@ -24,6 +24,11 @@ struct SnoozeResult {
     let skippedConflict: Bool
 }
 
+struct RescheduleResult {
+    let updatedTasks: [DynocalTask]
+    let skippedConflicts: Bool
+}
+
 private struct PlacementResult {
     let newStartDate: Date
     let skippedConflict: Bool
@@ -177,6 +182,49 @@ final class CalendarService {
             updatedTask: updatedTask,
             newStartDate: result.newStartDate,
             skippedConflict: result.skippedConflict
+        )
+    }
+
+    func rescheduleOverdueTasks() throws -> RescheduleResult {
+        let now = Date()
+        let overdueTasks = try tasks()
+            .filter { $0.startDate < now }
+            .sorted { $0.startDate < $1.startDate }
+
+        var updatedTasks: [DynocalTask] = []
+        var nextCandidateDate = now
+        var skippedConflicts = false
+
+        for task in overdueTasks {
+            let event = try dynocalEvent(id: task.id)
+            let duration = storedDuration(for: event)
+            let placement = nextOpenStartDate(
+                from: nextCandidateDate,
+                duration: duration,
+                excludingEventID: event.eventIdentifier
+            )
+
+            event.endDate = placement.newStartDate.addingTimeInterval(duration)
+            event.startDate = placement.newStartDate
+            event.alarms = []
+
+            try store.save(event, span: .thisEvent, commit: true)
+
+            let updatedTask = DynocalTask(
+                id: event.eventIdentifier,
+                title: event.title,
+                startDate: event.startDate,
+                endDate: event.endDate
+            )
+
+            updatedTasks.append(updatedTask)
+            nextCandidateDate = updatedTask.endDate
+            skippedConflicts = skippedConflicts || placement.skippedConflict
+        }
+
+        return RescheduleResult(
+            updatedTasks: updatedTasks,
+            skippedConflicts: skippedConflicts
         )
     }
 
