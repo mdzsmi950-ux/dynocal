@@ -6,14 +6,21 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     private let calendarService = CalendarService.shared
 
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var statusText: String?
+    @State private var hasCalendarAccess = CalendarService.shared.hasCalendarAccess
+    @State private var calendarAccessIsDenied = CalendarService.shared.calendarAccessIsDenied
     @State private var isCreatingTask = false
     @State private var isRescheduling = false
     @State private var isShowingNewTaskSheet = false
+    @State private var editingTask: DynocalTask?
     @State private var tasks: [DynocalTask] = []
     @State private var lastDeletedTask: DeletedTask?
     @State private var newTaskTitle = ""
@@ -24,7 +31,7 @@ struct ContentView: View {
         NavigationStack {
             ZStack(alignment: .bottom) {
                 Form {
-                    if !calendarService.hasCalendarAccess {
+                    if !hasCalendarAccess {
                         calendarAccessSection
                     } else {
                         tasksSection
@@ -42,7 +49,7 @@ struct ContentView: View {
                     Color.clear.frame(height: 118)
                 }
 
-                if calendarService.hasCalendarAccess {
+                if hasCalendarAccess {
                     PButton(isProcessing: isRescheduling) {
                         rescheduleOverdueTasks()
                     }
@@ -66,11 +73,16 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .disabled(!calendarService.hasCalendarAccess)
+                    .disabled(!hasCalendarAccess)
                 }
             }
             .onAppear {
                 loadInitialCalendarState()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    loadInitialCalendarState()
+                }
             }
             .sheet(isPresented: $isShowingNewTaskSheet) {
                 newTaskSheet
@@ -94,6 +106,16 @@ struct ContentView: View {
                     Label("Allow Access", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
+
+                if calendarAccessIsDenied {
+                    Button {
+                        if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(settingsURL)
+                        }
+                    } label: {
+                        Label("Open Settings", systemImage: "gear")
+                    }
+                }
             }
             .padding(.vertical, 6)
         }
@@ -122,6 +144,14 @@ struct ContentView: View {
             } else {
                 ForEach(tasks) { task in
                     taskRow(task)
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                beginEditing(task)
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                        }
                         .swipeActions(edge: .trailing) {
                             Button("Done", role: .destructive) {
                                 completeTask(task)
@@ -151,7 +181,7 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
                 }
             }
-            .navigationTitle("New Task")
+            .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -161,8 +191,8 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isCreatingTask ? "Creating..." : "Create") {
-                        createTask()
+                    Button(isCreatingTask ? "Saving..." : (editingTask == nil ? "Create" : "Save")) {
+                        saveTask()
                     }
                     .disabled(!canCreateTask)
                 }
@@ -212,14 +242,23 @@ struct ContentView: View {
 
     private var canCreateTask: Bool {
         !newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && calendarService.hasCalendarAccess
+            && hasCalendarAccess
             && !isCreatingTask
     }
 
     private func beginNewTask() {
+        editingTask = nil
         newTaskTitle = ""
         newTaskStartDate = Self.defaultTaskStartDate()
         newTaskDurationMinutes = 30
+        isShowingNewTaskSheet = true
+    }
+
+    private func beginEditing(_ task: DynocalTask) {
+        editingTask = task
+        newTaskTitle = task.title
+        newTaskStartDate = task.startDate
+        newTaskDurationMinutes = task.durationMinutes
         isShowingNewTaskSheet = true
     }
 
@@ -227,6 +266,8 @@ struct ContentView: View {
         Task {
             do {
                 let granted = try await calendarService.requestAccess()
+                hasCalendarAccess = granted
+                calendarAccessIsDenied = calendarService.calendarAccessIsDenied
 
                 if granted {
                     statusText = nil
@@ -235,12 +276,14 @@ struct ContentView: View {
                     statusText = "Calendar access denied"
                 }
             } catch {
+                hasCalendarAccess = calendarService.hasCalendarAccess
+                calendarAccessIsDenied = calendarService.calendarAccessIsDenied
                 statusText = "Calendar access failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private func createTask() {
+    private func saveTask() {
         let trimmedTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedTitle.isEmpty else {
@@ -249,27 +292,43 @@ struct ContentView: View {
         }
 
         isCreatingTask = true
-        statusText = "Creating \(trimmedTitle)..."
+        statusText = editingTask == nil ? "Creating \(trimmedTitle)..." : "Saving \(trimmedTitle)..."
 
         do {
-            let createdTask = try calendarService.addTask(
-                title: trimmedTitle,
-                startDate: newTaskStartDate,
-                durationMinutes: newTaskDurationMinutes
-            )
+            let savedTask: DynocalTask
+
+            if let editingTask {
+                savedTask = try calendarService.updateTask(
+                    id: editingTask.id,
+                    title: trimmedTitle,
+                    startDate: newTaskStartDate,
+                    durationMinutes: newTaskDurationMinutes
+                )
+            } else {
+                savedTask = try calendarService.addTask(
+                    title: trimmedTitle,
+                    startDate: newTaskStartDate,
+                    durationMinutes: newTaskDurationMinutes
+                )
+            }
+
             refreshTasks()
-            upsertTask(createdTask)
+            upsertTask(savedTask)
             isShowingNewTaskSheet = false
-            statusText = "Created \(trimmedTitle)."
+            self.editingTask = nil
+            statusText = "Saved \(trimmedTitle)."
         } catch {
-            statusText = "Could not create task: \(error.localizedDescription)"
+            statusText = "Could not save task: \(error.localizedDescription)"
         }
 
         isCreatingTask = false
     }
 
     private func loadInitialCalendarState() {
-        guard calendarService.hasCalendarAccess else {
+        hasCalendarAccess = calendarService.hasCalendarAccess
+        calendarAccessIsDenied = calendarService.calendarAccessIsDenied
+
+        guard hasCalendarAccess else {
             statusText = nil
             return
         }
@@ -392,64 +451,64 @@ private struct PButton: View {
     let isProcessing: Bool
     let action: () -> Void
 
+    private let buttonColor = Color(uiColor: .systemBlue)
+
     @State private var holdProgress = 0.0
-    @State private var orbitRotation = 0.0
+    @State private var isHolding = false
+    @State private var holdStartAngle = 0.0
     @State private var didConfirm = false
+    @State private var orbitStartedAt = Date()
 
     private let holdDuration = 1.4
+    private let orbitDuration = 18.0
 
     var body: some View {
         VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .stroke(
-                        AngularGradient(
-                            colors: [.pink, .purple, .blue, .pink],
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 3, dash: [5, 8], dashPhase: 2)
-                    )
-                    .frame(width: 96, height: 96)
-                    .rotationEffect(.degrees(orbitRotation))
-                    .opacity(isProcessing ? 0.35 : 0.8)
+            TimelineView(.animation) { timeline in
+                let idleAngle = orbitAngle(at: timeline.date)
+                let dotAngle = isHolding
+                    ? holdStartAngle + (holdProgress * 360)
+                    : idleAngle
 
-                Circle()
-                    .trim(from: 0, to: holdProgress)
-                    .stroke(
-                        AngularGradient(
-                            colors: [.white, .pink, .purple, .white],
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 7, lineCap: .round)
-                    )
-                    .frame(width: 92, height: 92)
-                    .rotationEffect(.degrees(-90))
-
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.purple, .indigo],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                ZStack {
+                    Circle()
+                        .trim(from: 0, to: holdProgress)
+                        .stroke(
+                            buttonColor,
+                            style: StrokeStyle(lineWidth: 7, lineCap: .round)
                         )
-                    )
-                    .frame(width: 78, height: 78)
-                    .shadow(color: .purple.opacity(0.45), radius: 14, y: 6)
+                        .frame(width: 92, height: 92)
+                        .rotationEffect(.degrees(holdStartAngle - 90))
+                        .opacity(isHolding || isProcessing ? 1 : 0)
 
-                if isProcessing {
-                    ProgressView()
-                        .tint(.white)
-                        .controlSize(.large)
-                } else if didConfirm {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(.white)
-                        .transition(.scale.combined(with: .opacity))
-                } else {
-                    Text("P")
-                        .font(.system(size: 34, weight: .black, design: .rounded))
-                        .foregroundStyle(.white)
+                    Circle()
+                        .fill(buttonColor)
+                        .frame(width: 10, height: 10)
+                        .offset(y: -46)
+                        .rotationEffect(.degrees(dotAngle))
+                        .opacity(isProcessing ? 0.35 : 0.9)
+
+                    Circle()
+                        .fill(buttonColor)
+                        .frame(width: 78, height: 78)
+                        .shadow(color: buttonColor.opacity(0.3), radius: 12, y: 5)
+
+                    if isProcessing {
+                        ProgressView()
+                            .tint(.white)
+                            .controlSize(.large)
+                    } else if didConfirm {
+                        Image(systemName: "checkmark")
+                            .symbolRenderingMode(.monochrome)
+                            .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    } else {
+                        Text("P")
+                            .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    }
                 }
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .animation(.easeOut(duration: 0.18), value: didConfirm)
             }
             .contentShape(Circle())
             .onLongPressGesture(
@@ -468,15 +527,6 @@ private struct PButton: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
-        .background(.ultraThinMaterial, in: Capsule())
-        .onAppear {
-            withAnimation(.linear(duration: 6).repeatForever(autoreverses: false)) {
-                orbitRotation = 360
-            }
-        }
     }
 
     private func handlePressing(_ isPressing: Bool) {
@@ -485,6 +535,8 @@ private struct PButton: View {
         if isPressing {
             didConfirm = false
             holdProgress = 0
+            holdStartAngle = orbitAngle(at: Date())
+            isHolding = true
 
             withAnimation(.linear(duration: holdDuration)) {
                 holdProgress = 1
@@ -493,6 +545,7 @@ private struct PButton: View {
             withAnimation(.easeOut(duration: 0.2)) {
                 holdProgress = 0
             }
+            isHolding = false
         }
     }
 
@@ -511,7 +564,13 @@ private struct PButton: View {
                     didConfirm = false
                     holdProgress = 0
                 }
+                isHolding = false
             }
         }
+    }
+
+    private func orbitAngle(at date: Date) -> Double {
+        date.timeIntervalSince(orbitStartedAt)
+            .truncatingRemainder(dividingBy: orbitDuration) / orbitDuration * 360
     }
 }

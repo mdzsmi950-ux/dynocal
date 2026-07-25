@@ -61,6 +61,11 @@ final class CalendarService {
         }
     }
 
+    var calendarAccessIsDenied: Bool {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        return status == .denied || status == .restricted
+    }
+
     func requestAccess() async throws -> Bool {
         if #available(iOS 17.0, *) {
             return try await store.requestFullAccessToEvents()
@@ -81,6 +86,25 @@ final class CalendarService {
         event.calendar = calendar
         event.alarms = []
         event.notes = dynocalNotes(durationMinutes: durationMinutes)
+
+        try store.save(event, span: .thisEvent, commit: true)
+
+        return DynocalTask(
+            id: event.eventIdentifier,
+            title: event.title,
+            startDate: event.startDate,
+            endDate: event.endDate
+        )
+    }
+
+    func updateTask(id: String, title: String, startDate: Date, durationMinutes: Int) throws -> DynocalTask {
+        let event = try dynocalEvent(id: id)
+
+        event.title = title
+        event.startDate = startDate
+        event.endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
+        event.notes = dynocalNotes(durationMinutes: durationMinutes)
+        event.alarms = []
 
         try store.save(event, span: .thisEvent, commit: true)
 
@@ -161,7 +185,7 @@ final class CalendarService {
         let result = nextOpenStartDate(
             from: targetStartDate,
             duration: duration,
-            excludingEventID: event.eventIdentifier
+            excludingEventIDs: [event.eventIdentifier]
         )
         let newEndDate = result.newStartDate.addingTimeInterval(duration)
 
@@ -194,6 +218,7 @@ final class CalendarService {
         var updatedTasks: [DynocalTask] = []
         var nextCandidateDate = now
         var skippedConflicts = false
+        let overdueTaskIDs = Set(overdueTasks.map(\.id))
 
         for task in overdueTasks {
             let event = try dynocalEvent(id: task.id)
@@ -201,7 +226,7 @@ final class CalendarService {
             let placement = nextOpenStartDate(
                 from: nextCandidateDate,
                 duration: duration,
-                excludingEventID: event.eventIdentifier
+                excludingEventIDs: overdueTaskIDs
             )
 
             event.endDate = placement.newStartDate.addingTimeInterval(duration)
@@ -241,7 +266,15 @@ final class CalendarService {
             return try dynocalCalendar(in: iCloudSource)
         }
 
-        throw CalendarServiceError.noICloudCalendarSource
+        if let localSource = store.sources.first(where: { $0.sourceType == .local }) {
+            return try dynocalCalendar(in: localSource)
+        }
+
+        if let defaultSource = store.defaultCalendarForNewEvents?.source {
+            return try dynocalCalendar(in: defaultSource)
+        }
+
+        throw CalendarServiceError.noWritableCalendarSource
     }
 
     private func dynocalCalendar(in source: EKSource) throws -> EKCalendar {
@@ -280,14 +313,20 @@ final class CalendarService {
             .source
     }
 
-    private func nextOpenStartDate(from targetStartDate: Date, duration: TimeInterval, excludingEventID: String) -> PlacementResult {
+    private func nextOpenStartDate(
+        from targetStartDate: Date,
+        duration: TimeInterval,
+        excludingEventIDs: Set<String>
+    ) -> PlacementResult {
         let searchEndDate = Calendar.current.date(byAdding: .day, value: 7, to: targetStartDate)
             ?? targetStartDate.addingTimeInterval(7 * 24 * 60 * 60)
         let calendars = store.calendars(for: .event)
         let predicate = store.predicateForEvents(withStart: targetStartDate, end: searchEndDate, calendars: calendars)
         let busyEvents = store.events(matching: predicate)
             .filter { event in
-                event.eventIdentifier != excludingEventID
+                let isExcluded = event.eventIdentifier.map(excludingEventIDs.contains) ?? false
+
+                return !isExcluded
                     && !event.isAllDay
                     && event.availability != .free
             }
@@ -386,13 +425,13 @@ final class CalendarService {
 }
 
 enum CalendarServiceError: LocalizedError {
-    case noICloudCalendarSource
+    case noWritableCalendarSource
     case taskNotFound
 
     var errorDescription: String? {
         switch self {
-        case .noICloudCalendarSource:
-            return "No iCloud calendar is available. Enable iCloud Calendar, then try again."
+        case .noWritableCalendarSource:
+            return "No writable calendar is available. Add a calendar account or enable a local calendar, then try again."
         case .taskNotFound:
             return "That task could not be found."
         }
