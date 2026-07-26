@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 @main
 struct DynocalApp: App {
@@ -13,5 +14,6 @@ struct DynocalApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: CompletedTaskRecord.self)
     }
 }

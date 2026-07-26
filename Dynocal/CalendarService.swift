@@ -6,6 +6,7 @@
 //
 
 import EventKit
+import Foundation
 
 enum TaskCategory: String, CaseIterable, Identifiable {
     case none = "None"
@@ -24,11 +25,37 @@ enum TaskPriority: String, CaseIterable, Identifiable {
     case high = "High"
 
     var id: Self { self }
+
+    nonisolated var sortRank: Int {
+        switch self {
+        case .high: 3
+        case .medium: 2
+        case .low: 1
+        case .none: 0
+        }
+    }
+}
+
+enum TaskSortMode: String, CaseIterable, Identifiable {
+    case time = "Time"
+    case deadline = "Deadline"
+    case priority = "Priority"
+
+    var id: Self { self }
+
+    var systemImage: String {
+        switch self {
+        case .time: "clock"
+        case .deadline: "calendar.badge.exclamationmark"
+        case .priority: "flag.fill"
+        }
+    }
 }
 
 struct DynocalTask: Identifiable, Hashable {
     let id: String
     let title: String
+    let taskDescription: String
     let startDate: Date
     let endDate: Date
     let category: TaskCategory
@@ -36,16 +63,70 @@ struct DynocalTask: Identifiable, Hashable {
     let deadline: Date?
     let priority: TaskPriority
     let location: String
+    let reflowCount: Int
+    let manualOrder: Int?
 
     var durationMinutes: Int {
         Int(endDate.timeIntervalSince(startDate) / 60)
     }
-}
 
-struct SnoozeResult {
-    let updatedTask: DynocalTask
-    let newStartDate: Date
-    let skippedConflict: Bool
+    nonisolated static func sorted(_ tasks: [DynocalTask], by mode: TaskSortMode) -> [DynocalTask] {
+        switch mode {
+        case .time:
+            tasks.sorted { left, right in
+                if left.startDate != right.startDate {
+                    return left.startDate < right.startDate
+                }
+
+                return left.priority.sortRank > right.priority.sortRank
+            }
+        case .deadline:
+            tasks.sorted { left, right in
+                switch (left.deadline, right.deadline) {
+                case let (leftDeadline?, rightDeadline?):
+                    return leftDeadline == rightDeadline
+                        ? left.startDate < right.startDate
+                        : leftDeadline < rightDeadline
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return left.startDate < right.startDate
+                }
+            }
+        case .priority:
+            tasks.sorted(by: isOrderedBefore)
+        }
+    }
+
+    nonisolated static func isOrderedBefore(_ left: DynocalTask, _ right: DynocalTask) -> Bool {
+        switch (left.manualOrder, right.manualOrder) {
+        case let (leftOrder?, rightOrder?):
+            return leftOrder == rightOrder
+                ? left.startDate < right.startDate
+                : leftOrder < rightOrder
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            if left.priority.sortRank != right.priority.sortRank {
+                return left.priority.sortRank > right.priority.sortRank
+            }
+
+            switch (left.deadline, right.deadline) {
+            case let (leftDeadline?, rightDeadline?) where leftDeadline != rightDeadline:
+                return leftDeadline < rightDeadline
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return left.startDate < right.startDate
+            }
+        }
+    }
 }
 
 struct RescheduleResult {
@@ -101,6 +182,7 @@ final class CalendarService {
 
     func addTask(
         title: String,
+        description: String,
         startDate: Date,
         durationMinutes: Int,
         category: TaskCategory,
@@ -121,6 +203,7 @@ final class CalendarService {
         event.location = location
         event.alarms = []
         event.notes = dynocalNotes(
+            taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
             travelTimeMinutes: travelTimeMinutes,
@@ -136,6 +219,7 @@ final class CalendarService {
     func updateTask(
         id: String,
         title: String,
+        description: String,
         startDate: Date,
         durationMinutes: Int,
         category: TaskCategory,
@@ -145,17 +229,21 @@ final class CalendarService {
         location: String
     ) throws -> DynocalTask {
         let event = try dynocalEvent(id: id)
+        let existingTask = task(from: event)
 
         event.title = title
         event.startDate = startDate
         event.endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
         event.location = location
         event.notes = dynocalNotes(
+            taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
             travelTimeMinutes: travelTimeMinutes,
             deadline: deadline,
-            priority: priority
+            priority: priority,
+            reflowCount: existingTask.reflowCount,
+            manualOrder: existingTask.manualOrder
         )
         event.alarms = []
 
@@ -207,6 +295,7 @@ final class CalendarService {
         event.location = deletedTask.location
         event.alarms = []
         event.notes = deletedTask.notes ?? dynocalNotes(
+            taskDescription: deletedTask.title,
             durationMinutes: Int(deletedTask.endDate.timeIntervalSince(deletedTask.startDate) / 60),
             category: .none,
             travelTimeMinutes: 0,
@@ -219,38 +308,11 @@ final class CalendarService {
         return task(from: event)
     }
 
-    func snoozeTask(id: String, by minutes: Int) throws -> SnoozeResult {
-        let event = try dynocalEvent(id: id)
-        let duration = storedDuration(for: event)
-        let baseStartDate = max(event.startDate, Date())
-        let targetStartDate = baseStartDate.addingTimeInterval(TimeInterval(minutes * 60))
-        let result = nextOpenStartDate(
-            from: targetStartDate,
-            duration: duration,
-            excludingEventIDs: [event.eventIdentifier]
-        )
-        let newEndDate = result.newStartDate.addingTimeInterval(duration)
-
-        event.endDate = newEndDate
-        event.startDate = result.newStartDate
-        event.alarms = []
-
-        try store.save(event, span: .thisEvent, commit: true)
-
-        let updatedTask = task(from: event)
-
-        return SnoozeResult(
-            updatedTask: updatedTask,
-            newStartDate: result.newStartDate,
-            skippedConflict: result.skippedConflict
-        )
-    }
-
     func rescheduleOverdueTasks() throws -> RescheduleResult {
         let now = Date()
         let overdueTasks = try tasks()
             .filter { $0.startDate < now }
-            .sorted { $0.startDate < $1.startDate }
+            .sorted(by: DynocalTask.isOrderedBefore)
 
         var updatedTasks: [DynocalTask] = []
         var nextCandidateDate = now
@@ -269,6 +331,16 @@ final class CalendarService {
             event.endDate = placement.newStartDate.addingTimeInterval(duration)
             event.startDate = placement.newStartDate
             event.alarms = []
+            event.notes = dynocalNotes(
+                taskDescription: task.taskDescription,
+                durationMinutes: task.durationMinutes,
+                category: task.category,
+                travelTimeMinutes: task.travelTimeMinutes,
+                deadline: task.deadline,
+                priority: task.priority,
+                reflowCount: task.reflowCount + 1,
+                manualOrder: task.manualOrder
+            )
 
             try store.save(event, span: .thisEvent, commit: true)
 
@@ -283,6 +355,50 @@ final class CalendarService {
             updatedTasks: updatedTasks,
             skippedConflicts: skippedConflicts
         )
+    }
+
+    func setManualOrder(taskIDs: [String]) throws {
+        for (order, id) in taskIDs.enumerated() {
+            let event = try dynocalEvent(id: id)
+            let task = task(from: event)
+
+            event.notes = dynocalNotes(
+                taskDescription: task.taskDescription,
+                durationMinutes: task.durationMinutes,
+                category: task.category,
+                travelTimeMinutes: task.travelTimeMinutes,
+                deadline: task.deadline,
+                priority: task.priority,
+                reflowCount: task.reflowCount,
+                manualOrder: order
+            )
+
+            try store.save(event, span: .thisEvent, commit: false)
+        }
+
+        try store.commit()
+    }
+
+    func clearManualOrder(taskIDs: [String]) throws {
+        for id in taskIDs {
+            let event = try dynocalEvent(id: id)
+            let task = task(from: event)
+
+            event.notes = dynocalNotes(
+                taskDescription: task.taskDescription,
+                durationMinutes: task.durationMinutes,
+                category: task.category,
+                travelTimeMinutes: task.travelTimeMinutes,
+                deadline: task.deadline,
+                priority: task.priority,
+                reflowCount: task.reflowCount,
+                manualOrder: nil
+            )
+
+            try store.save(event, span: .thisEvent, commit: false)
+        }
+
+        try store.commit()
     }
 
     private func dynocalCalendar() throws -> EKCalendar {
@@ -412,26 +528,34 @@ final class CalendarService {
     }
 
     private func dynocalNotes(
+        taskDescription: String,
         durationMinutes: Int,
         category: TaskCategory,
         travelTimeMinutes: Int,
         deadline: Date?,
-        priority: TaskPriority
+        priority: TaskPriority,
+        reflowCount: Int = 0,
+        manualOrder: Int? = nil
     ) -> String {
         let deadlineTimestamp = deadline.map { String($0.timeIntervalSince1970) } ?? "none"
+        let manualOrderValue = manualOrder.map(String.init) ?? "none"
+        let encodedDescription = Data(taskDescription.utf8).base64EncodedString()
 
         return """
         Created by Dynocal
 
         DYNOCAL_META_START
-        version: 2
+        version: 4
         itemType: task
         scheduleType: movable
+        taskDescriptionBase64: \(encodedDescription)
         category: \(category.rawValue)
         durationMinutes: \(durationMinutes)
         travelTimeMinutes: \(travelTimeMinutes)
         deadlineTimestamp: \(deadlineTimestamp)
         priority: \(priority.rawValue)
+        reflowCount: \(reflowCount)
+        manualOrder: \(manualOrderValue)
         DYNOCAL_META_END
         """
     }
@@ -446,17 +570,29 @@ final class CalendarService {
             .map(Date.init(timeIntervalSince1970:))
         let priority = metadataValue("priority", in: event.notes)
             .flatMap(TaskPriority.init(rawValue:)) ?? .none
+        let reflowCount = metadataValue("reflowCount", in: event.notes)
+            .flatMap(Int.init) ?? 0
+        let manualOrder = metadataValue("manualOrder", in: event.notes)
+            .flatMap(Int.init)
+        let taskDescription = metadataValue("taskDescriptionBase64", in: event.notes)
+            .flatMap { Data(base64Encoded: $0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+            ?? event.title
+            ?? "Untitled Task"
 
         return DynocalTask(
             id: event.eventIdentifier,
             title: event.title,
+            taskDescription: taskDescription,
             startDate: event.startDate,
             endDate: event.endDate,
             category: category,
             travelTimeMinutes: travelTimeMinutes,
             deadline: deadline,
             priority: priority,
-            location: event.location ?? ""
+            location: event.location ?? "",
+            reflowCount: reflowCount,
+            manualOrder: manualOrder
         )
     }
 

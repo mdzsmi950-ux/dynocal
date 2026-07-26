@@ -6,13 +6,18 @@
 //
 
 import SwiftUI
+import SwiftData
 import UIKit
 
 struct ContentView: View {
     private let calendarService = CalendarService.shared
+    private let taskInterpreter = TaskInterpreter.shared
 
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \CompletedTaskRecord.completedAt, order: .reverse)
+    private var completedTasks: [CompletedTaskRecord]
 
     @State private var statusText: String?
     @State private var hasCalendarAccess = CalendarService.shared.hasCalendarAccess
@@ -22,8 +27,8 @@ struct ContentView: View {
     @State private var isShowingNewTaskSheet = false
     @State private var editingTask: DynocalTask?
     @State private var tasks: [DynocalTask] = []
-    @State private var lastDeletedTask: DeletedTask?
     @State private var newTaskTitle = ""
+    @State private var newTaskDescription = ""
     @State private var newTaskStartDate = Self.defaultTaskStartDate()
     @State private var newTaskDurationMinutes = 30
     @State private var newTaskCategory = TaskCategory.none
@@ -32,6 +37,17 @@ struct ContentView: View {
     @State private var newTaskDeadline = Self.defaultTaskStartDate()
     @State private var newTaskPriority = TaskPriority.none
     @State private var newTaskLocation = ""
+    @State private var isInterpretingTask = false
+    @State private var taskInterpretationMessage: String?
+    @State private var interpretedTimePreference = ""
+    @State private var interpretedAsFixed = false
+    @State private var isShowingTaskDetails = false
+    @State private var dictationPrefix = ""
+    @StateObject private var speechInput = SpeechInputService()
+    @AppStorage("taskSortMode") private var taskSortModeRawValue = TaskSortMode.priority.rawValue
+    @State private var isAdjustingPriority = false
+    @State private var priorityDraftTaskIDs: [String] = []
+    @State private var taskEditMode: EditMode = .inactive
 
     var body: some View {
         NavigationStack {
@@ -42,6 +58,8 @@ struct ContentView: View {
                     } else {
                         tasksSection
                     }
+
+                    completedHistorySection
 
                     if let statusText {
                         Section {
@@ -54,6 +72,7 @@ struct ContentView: View {
                 .safeAreaInset(edge: .bottom) {
                     Color.clear.frame(height: 118)
                 }
+                .environment(\.editMode, $taskEditMode)
 
                 if hasCalendarAccess {
                     PButton(
@@ -73,16 +92,38 @@ struct ContentView: View {
                     } label: {
                         Label("Undo", systemImage: "arrow.uturn.backward")
                     }
-                    .disabled(lastDeletedTask == nil)
+                    .disabled(completedTasks.isEmpty || !hasCalendarAccess || isAdjustingPriority)
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("Sort Tasks", selection: $taskSortModeRawValue) {
+                            ForEach(TaskSortMode.allCases) { mode in
+                                Label(mode.rawValue, systemImage: mode.systemImage)
+                                    .tag(mode.rawValue)
+                            }
+                        }
+
+                        if hasManualOrder {
+                            Divider()
+
+                            Button {
+                                resetToPriorityOrder()
+                            } label: {
+                                Label("Reset Priority Adjustments", systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                    }
+                    .disabled(isAdjustingPriority)
+
                     Button {
                         beginNewTask()
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .disabled(!hasCalendarAccess)
+                    .disabled(!hasCalendarAccess || isAdjustingPriority)
                 }
             }
             .onAppear {
@@ -96,7 +137,34 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingNewTaskSheet) {
                 newTaskSheet
             }
+            .onDisappear {
+                speechInput.stop()
+            }
         }
+    }
+
+    private var taskSortMode: TaskSortMode {
+        TaskSortMode(rawValue: taskSortModeRawValue) ?? .priority
+    }
+
+    private var displayedTasks: [DynocalTask] {
+        guard isAdjustingPriority else {
+            return DynocalTask.sorted(tasks, by: taskSortMode)
+        }
+
+        let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+        let draftedTasks = priorityDraftTaskIDs.compactMap { tasksByID[$0] }
+        let draftedIDs = Set(priorityDraftTaskIDs)
+        let missingTasks = DynocalTask.sorted(
+            tasks.filter { !draftedIDs.contains($0.id) },
+            by: .priority
+        )
+
+        return draftedTasks + missingTasks
+    }
+
+    private var hasManualOrder: Bool {
+        tasks.contains { $0.manualOrder != nil }
     }
 
     private var calendarAccessSection: some View {
@@ -131,7 +199,7 @@ struct ContentView: View {
     }
 
     private var tasksSection: some View {
-        Section("Tasks") {
+        Section {
             if tasks.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("No Tasks")
@@ -151,7 +219,7 @@ struct ContentView: View {
                 }
                 .padding(.vertical, 10)
             } else {
-                ForEach(tasks) { task in
+                ForEach(displayedTasks) { task in
                     taskRow(task)
                         .swipeActions(edge: .leading) {
                             Button {
@@ -167,6 +235,54 @@ struct ContentView: View {
                             }
                         }
                 }
+                .onMove(perform: moveTasks)
+                .moveDisabled(!isAdjustingPriority)
+            }
+        } header: {
+            HStack {
+                Text("Tasks")
+
+                Spacer()
+
+                if taskSortMode == .priority {
+                    if isAdjustingPriority {
+                        Button("Cancel") {
+                            cancelPriorityAdjustment()
+                        }
+                        .font(.caption)
+                        .textCase(nil)
+
+                        Button("Save") {
+                            savePriorityAdjustment()
+                        }
+                        .font(.caption.bold())
+                        .textCase(nil)
+                    } else {
+                        Button("Adjust") {
+                            beginPriorityAdjustment()
+                        }
+                        .disabled(tasks.count < 2)
+                        .font(.caption)
+                        .textCase(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private var completedHistorySection: some View {
+        Section {
+            NavigationLink {
+                CompletedTasksView()
+            } label: {
+                HStack {
+                    Label("Completed", systemImage: "checkmark.circle")
+
+                    Spacer()
+
+                    Text("\(completedTasks.count)")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -174,75 +290,119 @@ struct ContentView: View {
     private var newTaskSheet: some View {
         NavigationStack {
             Form {
-                Section("Schedule") {
-                    DatePicker(
-                        "When",
-                        selection: $newTaskStartDate,
-                        displayedComponents: [.date, .hourAndMinute]
-                    )
-
-                    Picker("Duration", selection: $newTaskDurationMinutes) {
-                        Text("15m").tag(15)
-                        Text("30 min").tag(30)
-                        Text("45m").tag(45)
-                        Text("1 hr").tag(60)
-                        Text("90m").tag(90)
-                    }
-                    .pickerStyle(.menu)
-                }
-
                 Section("What do you need to do?") {
                     ZStack(alignment: .topLeading) {
-                        if newTaskTitle.isEmpty {
-                            Text("Describe the task...")
+                        if newTaskDescription.isEmpty {
+                            Text("Describe the task, timing, and anything Dynocal should know...")
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 8)
                                 .allowsHitTesting(false)
                         }
 
-                        TextEditor(text: $newTaskTitle)
-                            .frame(minHeight: 120)
+                        TextEditor(text: $newTaskDescription)
+                            .frame(minHeight: 150)
                             .scrollContentBackground(.hidden)
+                    }
+
+                    HStack {
+                        Button {
+                            toggleVoiceInput()
+                        } label: {
+                            Label(
+                                speechInput.isRecording ? "Stop" : "Speak",
+                                systemImage: speechInput.isRecording ? "stop.fill" : "mic.fill"
+                            )
+                        }
+                        .tint(speechInput.isRecording ? .red : .accentColor)
+
+                        Spacer()
+
+                        Button {
+                            interpretTaskDescription()
+                        } label: {
+                            Label(
+                                isInterpretingTask ? "Understanding..." : "Fill Details",
+                                systemImage: "apple.intelligence"
+                            )
+                        }
+                        .disabled(
+                            newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || isInterpretingTask
+                                || speechInput.isRecording
+                        )
+                    }
+
+                    if let message = speechInput.message ?? taskInterpretationMessage {
+                        Label(
+                            message,
+                            systemImage: message.hasPrefix("Filled") ? "checkmark.circle.fill" : "info.circle"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(message.hasPrefix("Filled") ? .green : .secondary)
                     }
                 }
 
                 Section {
-                    Picker("Category", selection: $newTaskCategory) {
-                        ForEach(TaskCategory.allCases) { category in
-                            Text(category.rawValue).tag(category)
-                        }
-                    }
+                    DisclosureGroup("Review details", isExpanded: $isShowingTaskDetails) {
+                        TextField("Task Name", text: $newTaskTitle)
 
-                    Picker("Travel Time", selection: $newTaskTravelTimeMinutes) {
-                        Text("None").tag(0)
-                        Text("15 min").tag(15)
-                        Text("30 min").tag(30)
-                        Text("45 min").tag(45)
-                        Text("1 hr").tag(60)
-                    }
-
-                    TextField("Location", text: $newTaskLocation)
-
-                    Toggle("Deadline", isOn: $newTaskHasDeadline)
-
-                    if newTaskHasDeadline {
                         DatePicker(
-                            "Due",
-                            selection: $newTaskDeadline,
+                            "When",
+                            selection: $newTaskStartDate,
                             displayedComponents: [.date, .hourAndMinute]
                         )
-                    }
 
-                    Picker("Priority", selection: $newTaskPriority) {
-                        ForEach(TaskPriority.allCases) { priority in
-                            Text(priority.rawValue).tag(priority)
+                        Stepper(
+                            "Duration: \(newTaskDurationMinutes) min",
+                            value: $newTaskDurationMinutes,
+                            in: 5...480,
+                            step: 5
+                        )
+
+                        Picker("Category", selection: $newTaskCategory) {
+                            ForEach(TaskCategory.allCases) { category in
+                                Text(category.rawValue).tag(category)
+                            }
+                        }
+
+                        Stepper(
+                            newTaskTravelTimeMinutes == 0
+                                ? "Travel Time: None"
+                                : "Travel Time: \(newTaskTravelTimeMinutes) min",
+                            value: $newTaskTravelTimeMinutes,
+                            in: 0...240,
+                            step: 5
+                        )
+
+                        TextField("Location", text: $newTaskLocation)
+
+                        Toggle("Deadline", isOn: $newTaskHasDeadline)
+
+                        if newTaskHasDeadline {
+                            DatePicker(
+                                "Due",
+                                selection: $newTaskDeadline,
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                        }
+
+                        Picker("Priority", selection: $newTaskPriority) {
+                            ForEach(TaskPriority.allCases) { priority in
+                                Text(priority.rawValue).tag(priority)
+                            }
+                        }
+
+                        if !interpretedTimePreference.isEmpty {
+                            LabeledContent("Preferred Time", value: interpretedTimePreference)
+                        }
+
+                        if interpretedAsFixed {
+                            LabeledContent("Scheduling", value: "Fixed time")
                         }
                     }
                 } header: {
                     Text("Optional")
-                } footer: {
-                    Text("These details are saved with the task. Smarter scheduling rules can use them later.")
                 }
             }
             .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
@@ -250,6 +410,7 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        speechInput.stop()
                         isShowingNewTaskSheet = false
                     }
                 }
@@ -272,42 +433,48 @@ struct ContentView: View {
 
                 Spacer()
 
-                Text("\(task.durationMinutes)m")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                taskStatusView(task)
             }
 
-            Label {
-                Text("\(task.startDate.formatted(date: .abbreviated, time: .shortened)) - \(task.endDate.formatted(date: .omitted, time: .shortened))")
-            } icon: {
-                Image(systemName: "clock")
-            }
+            Text("\(task.startDate.formatted(date: .abbreviated, time: .shortened)) – \(task.endDate.formatted(date: .omitted, time: .shortened))")
             .font(.subheadline)
             .foregroundStyle(.secondary)
-
-            HStack {
-                Button {
-                    snoozeTask(task, by: 30)
-                } label: {
-                    Label("30 min", systemImage: "goforward.30")
-                }
-
-                Button {
-                    snoozeTask(task, by: 60)
-                } label: {
-                    Label("1 hr", systemImage: "goforward.60")
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding(.vertical, 6)
     }
 
+    @ViewBuilder
+    private func taskStatusView(_ task: DynocalTask) -> some View {
+        HStack(spacing: 6) {
+            if task.startDate < Date() {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Overdue")
+            } else {
+                Image(systemName: "clock")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Planned")
+            }
+
+            if task.reflowCount > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Text("×\(task.reflowCount)")
+                }
+                .foregroundStyle(.blue)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Reflowed \(task.reflowCount) times")
+            }
+        }
+        .font(.body.weight(.semibold))
+    }
+
     private var canCreateTask: Bool {
-        !newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && hasCalendarAccess
             && !isCreatingTask
+            && !isInterpretingTask
+            && !speechInput.isRecording
     }
 
     private var overdueTaskCount: Int {
@@ -317,6 +484,7 @@ struct ContentView: View {
     private func beginNewTask() {
         editingTask = nil
         newTaskTitle = ""
+        newTaskDescription = ""
         newTaskStartDate = Self.defaultTaskStartDate()
         newTaskDurationMinutes = 30
         newTaskCategory = .none
@@ -325,12 +493,18 @@ struct ContentView: View {
         newTaskDeadline = newTaskStartDate
         newTaskPriority = .none
         newTaskLocation = ""
+        taskInterpretationMessage = nil
+        interpretedTimePreference = ""
+        interpretedAsFixed = false
+        isShowingTaskDetails = false
+        dictationPrefix = ""
         isShowingNewTaskSheet = true
     }
 
     private func beginEditing(_ task: DynocalTask) {
         editingTask = task
         newTaskTitle = task.title
+        newTaskDescription = task.taskDescription
         newTaskStartDate = task.startDate
         newTaskDurationMinutes = task.durationMinutes
         newTaskCategory = task.category
@@ -339,6 +513,11 @@ struct ContentView: View {
         newTaskDeadline = task.deadline ?? task.startDate
         newTaskPriority = task.priority
         newTaskLocation = task.location
+        taskInterpretationMessage = nil
+        interpretedTimePreference = ""
+        interpretedAsFixed = false
+        isShowingTaskDetails = true
+        dictationPrefix = ""
         isShowingNewTaskSheet = true
     }
 
@@ -363,11 +542,81 @@ struct ContentView: View {
         }
     }
 
-    private func saveTask() {
-        let trimmedTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func toggleVoiceInput() {
+        if !speechInput.isRecording {
+            let trimmedText = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            dictationPrefix = trimmedText.isEmpty ? "" : "\(trimmedText) "
+        }
 
-        guard !trimmedTitle.isEmpty else {
-            statusText = "Add a task name first"
+        speechInput.toggle { transcription in
+            newTaskDescription = dictationPrefix + transcription
+            taskInterpretationMessage = nil
+        }
+    }
+
+    private func interpretTaskDescription() {
+        let description = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !description.isEmpty, !isInterpretingTask else { return }
+
+        switch taskInterpreter.availability {
+        case .available:
+            break
+        case .unavailable(let reason):
+            taskInterpretationMessage = reason
+            isShowingTaskDetails = true
+            return
+        }
+
+        isInterpretingTask = true
+        taskInterpretationMessage = nil
+
+        Task {
+            do {
+                let draft = try await taskInterpreter.interpret(description)
+
+                newTaskTitle = draft.title
+                newTaskDurationMinutes = draft.durationMinutes
+                newTaskCategory = draft.category
+                newTaskTravelTimeMinutes = draft.travelTimeMinutes
+                newTaskPriority = draft.priority
+                newTaskLocation = draft.location
+                interpretedTimePreference = draft.preferredTimeOfDay
+                interpretedAsFixed = draft.isFixed
+
+                if let startDate = draft.startDate {
+                    newTaskStartDate = startDate
+                }
+
+                if let deadline = draft.deadline {
+                    newTaskHasDeadline = true
+                    newTaskDeadline = deadline
+                } else {
+                    newTaskHasDeadline = false
+                }
+
+                isShowingTaskDetails = true
+
+                if draft.needsBusinessHoursLookup {
+                    taskInterpretationMessage = "Filled what I could. Confirm the deadline because current business hours aren’t available."
+                } else {
+                    taskInterpretationMessage = "Filled details with Apple Intelligence. Review before creating."
+                }
+            } catch {
+                taskInterpretationMessage = "Apple Intelligence couldn’t fill the details: \(error.localizedDescription)"
+                isShowingTaskDetails = true
+            }
+
+            isInterpretingTask = false
+        }
+    }
+
+    private func saveTask() {
+        let trimmedDescription = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let enteredTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = enteredTitle.isEmpty ? trimmedDescription : enteredTitle
+
+        guard !trimmedDescription.isEmpty else {
+            statusText = "Describe the task first"
             return
         }
 
@@ -381,6 +630,7 @@ struct ContentView: View {
                 savedTask = try calendarService.updateTask(
                     id: editingTask.id,
                     title: trimmedTitle,
+                    description: trimmedDescription,
                     startDate: newTaskStartDate,
                     durationMinutes: newTaskDurationMinutes,
                     category: newTaskCategory,
@@ -392,6 +642,7 @@ struct ContentView: View {
             } else {
                 savedTask = try calendarService.addTask(
                     title: trimmedTitle,
+                    description: trimmedDescription,
                     startDate: newTaskStartDate,
                     durationMinutes: newTaskDurationMinutes,
                     category: newTaskCategory,
@@ -404,6 +655,7 @@ struct ContentView: View {
 
             refreshTasks()
             upsertTask(savedTask)
+            speechInput.stop()
             isShowingNewTaskSheet = false
             self.editingTask = nil
             statusText = "Saved \(trimmedTitle)."
@@ -444,7 +696,18 @@ struct ContentView: View {
     private func completeTask(_ task: DynocalTask) {
         do {
             statusText = "Removing \(task.title)..."
-            lastDeletedTask = try calendarService.completeTask(id: task.id)
+            let deletedTask = try calendarService.completeTask(id: task.id)
+            let completedRecord = CompletedTaskRecord(task: task, deletedTask: deletedTask)
+            modelContext.insert(completedRecord)
+
+            do {
+                try modelContext.save()
+            } catch {
+                modelContext.delete(completedRecord)
+                _ = try? calendarService.restoreTask(deletedTask)
+                throw error
+            }
+
             refreshTasks()
             statusText = "Completed \(task.title)"
         } catch {
@@ -453,33 +716,72 @@ struct ContentView: View {
     }
 
     private func undoCompleteTask() {
-        guard let lastDeletedTask else { return }
+        guard let completedTask = completedTasks.first else { return }
 
         do {
-            let restoredTask = try calendarService.restoreTask(lastDeletedTask)
+            let restoredTask = try calendarService.restoreTask(completedTask.deletedTask)
+            modelContext.delete(completedTask)
+            try modelContext.save()
             refreshTasks()
             upsertTask(restoredTask)
-            self.lastDeletedTask = nil
             statusText = "Restored \(restoredTask.title)."
         } catch {
             statusText = "Could not undo: \(error.localizedDescription)"
         }
     }
 
-    private func snoozeTask(_ task: DynocalTask, by minutes: Int) {
-        do {
-            statusText = "Moving \(task.title)..."
-            let result = try calendarService.snoozeTask(id: task.id, by: minutes)
-            replaceTaskInPlace(result.updatedTask)
-            let newTime = result.newStartDate.formatted(date: .omitted, time: .shortened)
+    private func moveTasks(from source: IndexSet, to destination: Int) {
+        guard isAdjustingPriority else { return }
+        priorityDraftTaskIDs.move(fromOffsets: source, toOffset: destination)
+    }
 
-            if result.skippedConflict {
-                statusText = "There wasn’t a good time immediately, so I moved \(task.title) to \(newTime)."
-            } else {
-                statusText = "Moved \(task.title) to \(newTime)."
+    private func beginPriorityAdjustment() {
+        guard taskSortMode == .priority, tasks.count > 1 else { return }
+
+        priorityDraftTaskIDs = DynocalTask.sorted(tasks, by: .priority).map(\.id)
+
+        withAnimation {
+            isAdjustingPriority = true
+            taskEditMode = .active
+        }
+    }
+
+    private func cancelPriorityAdjustment() {
+        withAnimation {
+            isAdjustingPriority = false
+            taskEditMode = .inactive
+        }
+
+        priorityDraftTaskIDs = []
+        statusText = "Priority changes canceled."
+    }
+
+    private func savePriorityAdjustment() {
+        guard isAdjustingPriority else { return }
+
+        do {
+            try calendarService.setManualOrder(taskIDs: priorityDraftTaskIDs)
+            refreshTasks()
+
+            withAnimation {
+                isAdjustingPriority = false
+                taskEditMode = .inactive
             }
+
+            priorityDraftTaskIDs = []
+            statusText = "Saved relative priority."
         } catch {
-            statusText = "Could not move task: \(error.localizedDescription)"
+            statusText = "Could not save priority: \(error.localizedDescription)"
+        }
+    }
+
+    private func resetToPriorityOrder() {
+        do {
+            try calendarService.clearManualOrder(taskIDs: tasks.map(\.id))
+            refreshTasks()
+            statusText = "Reset to assigned priorities."
+        } catch {
+            statusText = "Could not reset task order: \(error.localizedDescription)"
         }
     }
 
@@ -528,18 +830,116 @@ struct ContentView: View {
         return calendar.date(byAdding: .minute, value: minutesToAdd, to: baseDate) ?? now
     }
 
-    private func replaceTaskInPlace(_ task: DynocalTask) {
-        guard let index = tasks.firstIndex(where: { $0.id == task.id }) else {
-            upsertTask(task)
-            return
+}
+
+private struct CompletedTasksView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \CompletedTaskRecord.completedAt, order: .reverse)
+    private var completedTasks: [CompletedTaskRecord]
+
+    @State private var isConfirmingDeleteAll = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        List {
+            if completedTasks.isEmpty {
+                ContentUnavailableView(
+                    "No Completed Tasks",
+                    systemImage: "checkmark.circle",
+                    description: Text("Tasks you complete will be kept here.")
+                )
+            } else {
+                ForEach(completedTasks) { task in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(task.title)
+                                .font(.headline)
+
+                            Spacer()
+
+                            if task.reflowCount > 0 {
+                                Label(
+                                    "×\(task.reflowCount)",
+                                    systemImage: "arrow.triangle.2.circlepath"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.blue)
+                                .labelStyle(.titleAndIcon)
+                            }
+                        }
+
+                        Text("Completed \(task.completedAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Text("Originally \(task.startDate.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .onDelete(perform: deleteCompletedTasks)
+            }
+
+            if let errorMessage {
+                Section {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle("Completed")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Delete All", role: .destructive) {
+                    isConfirmingDeleteAll = true
+                }
+                .disabled(completedTasks.isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "Delete all completed-task history?",
+            isPresented: $isConfirmingDeleteAll,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                deleteAllCompletedTasks()
+            }
+        } message: {
+            Text("This cannot be undone. Active Calendar events will not be affected.")
+        }
+    }
+
+    private func deleteCompletedTasks(at offsets: IndexSet) {
+        for index in offsets {
+            modelContext.delete(completedTasks[index])
         }
 
-        tasks[index] = task
+        saveChanges()
+    }
+
+    private func deleteAllCompletedTasks() {
+        for task in completedTasks {
+            modelContext.delete(task)
+        }
+
+        saveChanges()
+    }
+
+    private func saveChanges() {
+        do {
+            try modelContext.save()
+            errorMessage = nil
+        } catch {
+            errorMessage = "Could not update completed history: \(error.localizedDescription)"
+        }
     }
 }
 
 #Preview {
     ContentView()
+        .modelContainer(for: CompletedTaskRecord.self, inMemory: true)
 }
 
 private struct PButton: View {
