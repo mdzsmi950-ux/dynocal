@@ -67,11 +67,25 @@ struct LifestyleSettingsView: View {
 
                     TextField("Work address", text: profileBinding(\.workAddress))
                         .textContentType(.fullStreetAddress)
+
+                    if preferences.profile.workAddress
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Travel time from work cannot be accounted for until this is added.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Section("Home & Sleep") {
                     TextField("Home address", text: profileBinding(\.homeAddress))
                         .textContentType(.fullStreetAddress)
+
+                    if preferences.profile.homeAddress
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Travel time from home cannot be accounted for until this is added.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
 
                     Toggle("Protect sleep", isOn: profileBinding(\.protectSleep))
 
@@ -107,6 +121,19 @@ struct LifestyleSettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                }
+
+                Section {
+                    Picker("Usual Travel Mode", selection: travelModeBinding) {
+                        ForEach(TravelMode.allCases) { mode in
+                            Label(mode.rawValue, systemImage: mode.systemImage)
+                                .tag(mode)
+                        }
+                    }
+                } header: {
+                    Text("Travel")
+                } footer: {
+                    Text("Dynocal uses this mode when calculating travel time for destination tasks.")
                 }
 
                 if !isOnboarding {
@@ -218,6 +245,13 @@ struct LifestyleSettingsView: View {
         Binding(
             get: { preferences.profile[keyPath: keyPath] },
             set: { preferences.profile[keyPath: keyPath] = $0 }
+        )
+    }
+
+    private var travelModeBinding: Binding<TravelMode> {
+        Binding(
+            get: { preferences.profile.effectiveTravelMode },
+            set: { preferences.profile.travelMode = $0 }
         )
     }
 

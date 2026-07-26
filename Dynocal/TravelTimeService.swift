@@ -7,10 +7,16 @@ final class TravelTimeService {
 
     private var mapItemCache: [String: MKMapItem] = [:]
     private var routeCache: [RouteKey: Int] = [:]
-    private var unresolvedQueries: Set<String> = []
-    private var failedRoutePairs: Set<RoutePair> = []
+    private var unresolvedQueries: [String: Date] = [:]
+    private var failedRoutePairs: [RoutePair: Date] = [:]
+    private let failureRetryDelay: TimeInterval = 15
 
     private init() {}
+
+    func beginSchedulingAttempt() {
+        unresolvedQueries.removeAll()
+        failedRoutePairs.removeAll()
+    }
 
     func estimatedMinutes(
         from origin: SchedulingOrigin,
@@ -27,20 +33,27 @@ final class TravelTimeService {
         let key = RouteKey(
             origin: PreferencesStore.normalized(originText),
             destination: PreferencesStore.normalized(destination),
-            timeBucket: Int(departureDate.timeIntervalSince1970 / (30 * 60))
+            timeBucket: Int(departureDate.timeIntervalSince1970 / (30 * 60)),
+            travelMode: PreferencesStore.shared.profile.effectiveTravelMode
         )
         if let cached = routeCache[key] {
             return cached
         }
-        let pair = RoutePair(origin: key.origin, destination: key.destination)
-        if failedRoutePairs.contains(pair) {
+        let pair = RoutePair(
+            origin: key.origin,
+            destination: key.destination,
+            travelMode: key.travelMode
+        )
+        if let failedAt = failedRoutePairs[pair],
+           Date().timeIntervalSince(failedAt) < failureRetryDelay {
             return nil
         }
+        failedRoutePairs.removeValue(forKey: pair)
 
         let request = MKDirections.Request()
         request.source = source
         request.destination = target
-        request.transportType = .automobile
+        request.transportType = key.travelMode.mapKitTransportType
         request.departureDate = departureDate
 
         do {
@@ -50,9 +63,10 @@ final class TravelTimeService {
                 Int(ceil(response.expectedTravelTime / (5 * 60))) * 5
             )
             routeCache[key] = roundedMinutes
+            failedRoutePairs.removeValue(forKey: pair)
             return roundedMinutes
         } catch {
-            failedRoutePairs.insert(pair)
+            failedRoutePairs[pair] = Date()
             return nil
         }
     }
@@ -62,9 +76,11 @@ final class TravelTimeService {
         if let cached = mapItemCache[key] {
             return cached
         }
-        if unresolvedQueries.contains(key) {
+        if let failedAt = unresolvedQueries[key],
+           Date().timeIntervalSince(failedAt) < failureRetryDelay {
             return nil
         }
+        unresolvedQueries.removeValue(forKey: key)
 
         if let savedPlace = PreferencesStore.shared.place(matching: query),
            let latitude = savedPlace.latitude,
@@ -83,10 +99,11 @@ final class TravelTimeService {
         request.resultTypes = [.address, .pointOfInterest]
 
         guard let item = try? await MKLocalSearch(request: request).start().mapItems.first else {
-            unresolvedQueries.insert(key)
+            unresolvedQueries[key] = Date()
             return nil
         }
         mapItemCache[key] = item
+        unresolvedQueries.removeValue(forKey: key)
         return item
     }
 }
@@ -95,11 +112,23 @@ private struct RouteKey: Hashable {
     let origin: String
     let destination: String
     let timeBucket: Int
+    let travelMode: TravelMode
 }
 
 private struct RoutePair: Hashable {
     let origin: String
     let destination: String
+    let travelMode: TravelMode
+}
+
+private extension TravelMode {
+    var mapKitTransportType: MKDirectionsTransportType {
+        switch self {
+        case .driving: .automobile
+        case .walking: .walking
+        case .transit: .transit
+        }
+    }
 }
 
 private extension SchedulingOrigin {

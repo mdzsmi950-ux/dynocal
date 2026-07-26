@@ -69,6 +69,7 @@ struct DynocalTask: Identifiable, Hashable {
     let requiresBusinessHours: Bool
     let reflowCount: Int
     let manualOrder: Int?
+    let needsDetailsReview: Bool
 
     var durationMinutes: Int {
         workDurationMinutes
@@ -76,6 +77,10 @@ struct DynocalTask: Identifiable, Hashable {
 
     var workStartDate: Date {
         startDate.addingTimeInterval(TimeInterval(travelTimeMinutes * 60))
+    }
+
+    var requiresGuaranteedPlacement: Bool {
+        priority == .high || deadline != nil
     }
 
     nonisolated static func sorted(_ tasks: [DynocalTask], by mode: TaskSortMode) -> [DynocalTask] {
@@ -139,7 +144,14 @@ struct DynocalTask: Identifiable, Hashable {
 
 struct RescheduleResult {
     let updatedTasks: [DynocalTask]
+    let deferredTasks: [DynocalTask]
     let skippedConflicts: Bool
+}
+
+private struct PlannedTaskUpdate {
+    let originalTask: DynocalTask
+    let placement: PlacementResult
+    let workDuration: TimeInterval
 }
 
 private struct PlacementResult {
@@ -282,6 +294,7 @@ final class CalendarService {
         isMovable: Bool,
         requiresBusinessHours: Bool
     ) async throws -> DynocalTask {
+        TravelTimeService.shared.beginSchedulingAttempt()
         let calendar = try dynocalCalendar()
 
         let taskDuration = TimeInterval(durationMinutes * 60)
@@ -353,6 +366,7 @@ final class CalendarService {
         isMovable: Bool,
         requiresBusinessHours: Bool
     ) async throws -> DynocalTask {
+        TravelTimeService.shared.beginSchedulingAttempt()
         let event = try dynocalEvent(id: id)
         let existingTask = task(from: event)
 
@@ -417,16 +431,43 @@ final class CalendarService {
         let calendars = store.calendars(for: .event)
             .filter { $0.title == appCalendarTitle || $0.title == legacyCalendarTitle }
 
-        let today = Calendar.current.startOfDay(for: Date())
-        let startDate = Calendar.current.date(byAdding: .day, value: -30, to: today) ?? today
-        let endDate = Calendar.current.date(byAdding: .day, value: 14, to: today) ?? Date()
-        let predicate = store.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
-
-        return store.events(matching: predicate)
+        return eventsAcrossPracticalCalendarHistory(in: calendars)
             .filter { isDynocalEvent($0) }
-            .filter { !$0.isAllDay }
             .sorted { $0.startDate < $1.startDate }
             .map(task(from:))
+    }
+
+    private func eventsAcrossPracticalCalendarHistory(
+        in calendars: [EKCalendar]
+    ) -> [EKEvent] {
+        let calendar = Calendar(identifier: .gregorian)
+        guard var chunkStart = calendar.date(
+            from: DateComponents(year: 1900, month: 1, day: 1)
+        ), let finalEnd = calendar.date(
+            from: DateComponents(year: 2200, month: 1, day: 1)
+        ) else {
+            return []
+        }
+
+        var eventsByIdentifier: [String: EKEvent] = [:]
+        while chunkStart < finalEnd {
+            let chunkEnd = min(
+                calendar.date(byAdding: .year, value: 4, to: chunkStart) ?? finalEnd,
+                finalEnd
+            )
+            let predicate = store.predicateForEvents(
+                withStart: chunkStart,
+                end: chunkEnd,
+                calendars: calendars
+            )
+            for event in store.events(matching: predicate) {
+                if let identifier = event.eventIdentifier {
+                    eventsByIdentifier[identifier] = event
+                }
+            }
+            chunkStart = chunkEnd
+        }
+        return Array(eventsByIdentifier.values)
     }
 
     func completeTask(id: String) throws -> DeletedTask {
@@ -468,12 +509,18 @@ final class CalendarService {
     }
 
     func rescheduleOverdueTasks() async throws -> RescheduleResult {
+        TravelTimeService.shared.beginSchedulingAttempt()
         let now = Date()
         let overdueTasks = try tasks()
-            .filter { $0.startDate < now && $0.isMovable }
+            .filter {
+                $0.startDate < now
+                    && $0.isMovable
+                    && !$0.needsDetailsReview
+            }
             .sorted(by: DynocalTask.isOrderedBefore)
 
-        var updatedTasks: [DynocalTask] = []
+        var plannedUpdates: [PlannedTaskUpdate] = []
+        var deferredTasks: [DynocalTask] = []
         var nextCandidateDate = now
         var skippedConflicts = false
         let overdueTaskIDs = Set(overdueTasks.map(\.id))
@@ -481,50 +528,83 @@ final class CalendarService {
         for task in overdueTasks {
             let event = try dynocalEvent(id: task.id)
             let duration = storedDuration(for: event)
-            let placement = try await nextOpenStartDate(
-                from: nextCandidateDate,
-                workDuration: duration,
-                category: task.category,
-                destination: task.location,
-                requiresBusinessHours: task.requiresBusinessHours,
-                preferredTimeOfDay: task.preferredTimeOfDay,
-                deadline: task.deadline,
-                excludingEventIDs: overdueTaskIDs
-            )
-            let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
+            do {
+                let placement = try await nextOpenStartDate(
+                    from: nextCandidateDate,
+                    workDuration: duration,
+                    category: task.category,
+                    destination: task.location,
+                    requiresBusinessHours: task.requiresBusinessHours,
+                    preferredTimeOfDay: task.preferredTimeOfDay,
+                    deadline: task.deadline,
+                    excludingEventIDs: overdueTaskIDs
+                )
+                let endDate = placement.newStartDate.addingTimeInterval(
+                    TimeInterval(placement.travelTimeMinutes * 60) + duration
+                )
+                if let deadline = task.deadline, endDate > deadline {
+                    throw CalendarServiceError.noRoomBeforeDeadline
+                }
 
-            event.startDate = placement.newStartDate
-            event.endDate = event.startDate.addingTimeInterval(travelDuration + duration)
-
-            if let deadline = task.deadline, event.endDate > deadline {
-                throw CalendarServiceError.noRoomBeforeDeadline
+                plannedUpdates.append(
+                    PlannedTaskUpdate(
+                        originalTask: task,
+                        placement: placement,
+                        workDuration: duration
+                    )
+                )
+                nextCandidateDate = endDate
+                skippedConflicts = skippedConflicts || placement.skippedConflict
+            } catch {
+                if task.requiresGuaranteedPlacement {
+                    throw error
+                }
+                deferredTasks.append(task)
             }
-            event.alarms = []
-            event.notes = dynocalNotes(
-                taskDescription: task.taskDescription,
-                durationMinutes: task.durationMinutes,
-                category: task.category,
-                travelTimeMinutes: placement.travelTimeMinutes,
-                deadline: task.deadline,
-                priority: task.priority,
-                preferredTimeOfDay: task.preferredTimeOfDay,
-                isMovable: task.isMovable,
-                reflowCount: task.reflowCount + 1,
-                manualOrder: task.manualOrder,
-                requiresBusinessHours: task.requiresBusinessHours
-            )
+        }
 
-            try store.save(event, span: .thisEvent, commit: true)
+        var updatedTasks: [DynocalTask] = []
+        do {
+            for update in plannedUpdates {
+                let task = update.originalTask
+                let placement = update.placement
+                let event = try dynocalEvent(id: task.id)
+                let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
 
-            let updatedTask = self.task(from: event)
+                event.startDate = placement.newStartDate
+                event.endDate = event.startDate.addingTimeInterval(
+                    travelDuration + update.workDuration
+                )
+                event.alarms = []
+                event.notes = dynocalNotes(
+                    taskDescription: task.taskDescription,
+                    durationMinutes: task.durationMinutes,
+                    category: task.category,
+                    travelTimeMinutes: placement.travelTimeMinutes,
+                    deadline: task.deadline,
+                    priority: task.priority,
+                    preferredTimeOfDay: task.preferredTimeOfDay,
+                    isMovable: task.isMovable,
+                    reflowCount: task.reflowCount + 1,
+                    manualOrder: task.manualOrder,
+                    requiresBusinessHours: task.requiresBusinessHours
+                )
 
-            updatedTasks.append(updatedTask)
-            nextCandidateDate = updatedTask.endDate
-            skippedConflicts = skippedConflicts || placement.skippedConflict
+                try store.save(event, span: .thisEvent, commit: false)
+                updatedTasks.append(self.task(from: event))
+            }
+
+            if !plannedUpdates.isEmpty {
+                try store.commit()
+            }
+        } catch {
+            store.reset()
+            throw error
         }
 
         return RescheduleResult(
             updatedTasks: updatedTasks,
+            deferredTasks: deferredTasks,
             skippedConflicts: skippedConflicts
         )
     }
@@ -766,10 +846,21 @@ final class CalendarService {
             }
 
             if requiresBusinessHours {
-                let weekday = Calendar.current.component(.weekday, from: taskStartDate)
-                guard let hours = savedHours.first(where: { $0.weekday == weekday }),
-                      hours.contains(start: taskStartDate, end: candidateEndDate) else {
-                    candidateStartDate = startOfNextDay(after: candidateStartDate)
+                guard PlaceDayHours.contains(
+                    savedHours,
+                    start: taskStartDate,
+                    end: candidateEndDate
+                ) else {
+                    if let nextOpening = PlaceDayHours.nextOpening(
+                        after: taskStartDate,
+                        in: savedHours
+                    ) {
+                        candidateStartDate = roundedUpToNextFiveMinutes(
+                            nextOpening.addingTimeInterval(-travelDuration)
+                        )
+                    } else {
+                        candidateStartDate = startOfNextDay(after: candidateStartDate)
+                    }
                     continue
                 }
             }
@@ -831,10 +922,21 @@ final class CalendarService {
                     continue
                 }
                 if requiresBusinessHours {
-                    let weekday = Calendar.current.component(.weekday, from: taskStartDate)
-                    guard let hours = savedHours.first(where: { $0.weekday == weekday }),
-                          hours.contains(start: taskStartDate, end: candidateEndDate) else {
-                        candidateStartDate = startOfNextDay(after: candidateStartDate)
+                    guard PlaceDayHours.contains(
+                        savedHours,
+                        start: taskStartDate,
+                        end: candidateEndDate
+                    ) else {
+                        if let nextOpening = PlaceDayHours.nextOpening(
+                            after: taskStartDate,
+                            in: savedHours
+                        ) {
+                            candidateStartDate = roundedUpToNextFiveMinutes(
+                                nextOpening.addingTimeInterval(-travelDuration)
+                            )
+                        } else {
+                            candidateStartDate = startOfNextDay(after: candidateStartDate)
+                        }
                         continue
                     }
                 }
@@ -867,76 +969,108 @@ final class CalendarService {
         excludingEventIDs: Set<String>
     ) async throws -> PlacementResult {
         let trimmedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedDestination.isEmpty else {
-            return PlacementResult(
-                newStartDate: taskStartDate,
-                travelTimeMinutes: 0,
-                skippedConflict: false
-            )
-        }
+        var travelTimeMinutes = 0
 
-        let contextStart = taskStartDate.addingTimeInterval(
+        if !trimmedDestination.isEmpty {
+            let contextStart = taskStartDate.addingTimeInterval(
             -SchedulingContextResolver.eventAnchorWindow
-        )
-        let predicate = store.predicateForEvents(
-            withStart: contextStart,
-            end: taskStartDate.addingTimeInterval(workDuration),
-            calendars: store.calendars(for: .event)
-        )
-        let contextEvents = store.events(matching: predicate)
-            .filter {
-                !$0.isAllDay
-                    && !($0.eventIdentifier.map(excludingEventIDs.contains) ?? false)
+            )
+            let predicate = store.predicateForEvents(
+                withStart: contextStart,
+                end: taskStartDate.addingTimeInterval(workDuration),
+                calendars: store.calendars(for: .event)
+            )
+            let contextEvents = store.events(matching: predicate)
+                .filter {
+                    !$0.isAllDay
+                        && !($0.eventIdentifier.map(excludingEventIDs.contains) ?? false)
+                }
+                .compactMap { event -> CalendarContextEvent? in
+                    guard let start = event.startDate, let end = event.endDate else {
+                        return nil
+                    }
+                    let location = event.location?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let structuredTitle = event.structuredLocation?.title?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return CalendarContextEvent(
+                        start: start,
+                        end: end,
+                        location: location?.isEmpty == false ? location : structuredTitle
+                    )
+                }
+            let origin = SchedulingContextResolver.origin(
+                at: taskStartDate,
+                events: contextEvents,
+                profile: PreferencesStore.shared.profile
+            )
+            guard origin != .unknown else {
+                throw CalendarServiceError.unknownTravelOrigin
             }
-            .compactMap { event -> CalendarContextEvent? in
-                guard let start = event.startDate, let end = event.endDate else { return nil }
-                let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let structuredTitle = event.structuredLocation?.title?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return CalendarContextEvent(
-                    start: start,
-                    end: end,
-                    location: location?.isEmpty == false ? location : structuredTitle
-                )
+            guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
+                from: origin,
+                to: trimmedDestination,
+                departureDate: taskStartDate
+            ) else {
+                throw CalendarServiceError.travelRouteUnavailable
             }
-        let origin = SchedulingContextResolver.origin(
-            at: taskStartDate,
-            events: contextEvents,
-            profile: PreferencesStore.shared.profile
-        )
-        guard origin != .unknown else {
-            throw CalendarServiceError.unknownTravelOrigin
-        }
-        guard let travelTimeMinutes = await TravelTimeService.shared.estimatedMinutes(
-            from: origin,
-            to: trimmedDestination,
-            departureDate: taskStartDate
-        ) else {
-            throw CalendarServiceError.travelRouteUnavailable
+            travelTimeMinutes = estimatedMinutes
         }
 
         let taskEndDate = taskStartDate.addingTimeInterval(workDuration)
         if requiresBusinessHours {
             let hours = PreferencesStore.shared.place(matching: trimmedDestination)?
-                .weeklyHours
-                .first {
-                    $0.weekday == Calendar.current.component(.weekday, from: taskStartDate)
-                }
-            guard let hours else {
+                .weeklyHours ?? []
+            guard !hours.isEmpty else {
                 throw CalendarServiceError.unknownBusinessHours
             }
-            guard hours.contains(start: taskStartDate, end: taskEndDate) else {
+            guard PlaceDayHours.contains(
+                hours,
+                start: taskStartDate,
+                end: taskEndDate
+            ) else {
                 throw CalendarServiceError.outsideBusinessHours
             }
         }
 
+        let blockStartDate = taskStartDate.addingTimeInterval(
+            TimeInterval(-travelTimeMinutes * 60)
+        )
+        if hasCalendarConflict(
+            from: blockStartDate,
+            through: taskEndDate,
+            excludingEventIDs: excludingEventIDs
+        ) {
+            throw CalendarServiceError.fixedTimeConflict
+        }
+
         return PlacementResult(
-            newStartDate: taskStartDate.addingTimeInterval(
-                TimeInterval(-travelTimeMinutes * 60)
-            ),
+            newStartDate: blockStartDate,
             travelTimeMinutes: travelTimeMinutes,
             skippedConflict: false
         )
+    }
+
+    private func hasCalendarConflict(
+        from startDate: Date,
+        through endDate: Date,
+        excludingEventIDs: Set<String>
+    ) -> Bool {
+        let predicate = store.predicateForEvents(
+            withStart: startDate,
+            end: endDate,
+            calendars: store.calendars(for: .event)
+        )
+        return store.events(matching: predicate).contains { event in
+            guard !event.isAllDay,
+                  event.availability != .free,
+                  !(event.eventIdentifier.map(excludingEventIDs.contains) ?? false),
+                  let eventStart = event.startDate,
+                  let eventEnd = event.endDate else {
+                return false
+            }
+            return startDate < eventEnd && endDate > eventStart
+        }
     }
 
     private func startOfNextDay(after date: Date) -> Date {
@@ -1059,6 +1193,7 @@ final class CalendarService {
     }
 
     private func task(from event: EKEvent) -> DynocalTask {
+        let needsDetailsReview = !hasCompleteTaskMetadata(event.notes)
         let category = metadataValue("category", in: event.notes)
             .flatMap(TaskCategory.init(rawValue:)) ?? .none
         let travelTimeMinutes = metadataValue("travelTimeMinutes", in: event.notes)
@@ -1076,7 +1211,8 @@ final class CalendarService {
         let priority = metadataValue("priority", in: event.notes)
             .flatMap(TaskPriority.init(rawValue:)) ?? .none
         let preferredTimeOfDay = metadataValue("preferredTimeOfDay", in: event.notes) ?? ""
-        let isMovable = metadataValue("scheduleType", in: event.notes) != "fixed"
+        let isMovable = !needsDetailsReview
+            && metadataValue("scheduleType", in: event.notes) != "fixed"
         let reflowCount = metadataValue("reflowCount", in: event.notes)
             .flatMap(Int.init) ?? 0
         let manualOrder = metadataValue("manualOrder", in: event.notes)
@@ -1105,8 +1241,21 @@ final class CalendarService {
             isMovable: isMovable,
             requiresBusinessHours: requiresBusinessHours,
             reflowCount: reflowCount,
-            manualOrder: manualOrder
+            manualOrder: manualOrder,
+            needsDetailsReview: needsDetailsReview
         )
+    }
+
+    private func hasCompleteTaskMetadata(_ notes: String?) -> Bool {
+        guard notes?.contains(metadataStart) == true
+                || notes?.contains(legacyMetadataStart) == true else {
+            return false
+        }
+
+        return metadataValue("scheduleType", in: notes) != nil
+            && metadataValue("durationMinutes", in: notes) != nil
+            && metadataValue("category", in: notes) != nil
+            && metadataValue("priority", in: notes) != nil
     }
 
     private func isDynocalEvent(_ event: EKEvent) -> Bool {
@@ -1149,6 +1298,7 @@ enum CalendarServiceError: LocalizedError {
     case travelRouteUnavailable
     case unknownBusinessHours
     case outsideBusinessHours
+    case fixedTimeConflict
 
     var errorDescription: String? {
         switch self {
@@ -1168,6 +1318,8 @@ enum CalendarServiceError: LocalizedError {
             return "This task depends on business hours that have not been saved yet. Review the place in Settings."
         case .outsideBusinessHours:
             return "This fixed time falls outside the saved business hours."
+        case .fixedTimeConflict:
+            return "This fixed task overlaps another calendar event, including any required travel time. Choose a different time."
         }
     }
 }

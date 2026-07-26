@@ -10,6 +10,22 @@ enum PlaceOrigin: String, Codable, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+enum TravelMode: String, Codable, CaseIterable, Identifiable {
+    case driving = "Driving"
+    case walking = "Walking"
+    case transit = "Transit"
+
+    var id: Self { self }
+
+    var systemImage: String {
+        switch self {
+        case .driving: "car.fill"
+        case .walking: "figure.walk"
+        case .transit: "bus.fill"
+        }
+    }
+}
+
 struct PlacePreference: Codable, Identifiable, Hashable {
     var id = UUID()
     var query: String
@@ -80,11 +96,45 @@ struct PlacePreference: Codable, Identifiable, Hashable {
 }
 
 struct PlaceDayHours: Codable, Identifiable, Hashable {
+    var id: UUID
     var weekday: Int
     var opensAtMinutes: Int
     var closesAtMinutes: Int
+    var isOpen24Hours: Bool
 
-    var id: Int { weekday }
+    init(
+        id: UUID = UUID(),
+        weekday: Int,
+        opensAtMinutes: Int,
+        closesAtMinutes: Int,
+        isOpen24Hours: Bool = false
+    ) {
+        self.id = id
+        self.weekday = weekday
+        self.opensAtMinutes = opensAtMinutes
+        self.closesAtMinutes = closesAtMinutes
+        self.isOpen24Hours = isOpen24Hours
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case weekday
+        case opensAtMinutes
+        case closesAtMinutes
+        case isOpen24Hours
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        weekday = try container.decode(Int.self, forKey: .weekday)
+        opensAtMinutes = try container.decode(Int.self, forKey: .opensAtMinutes)
+        closesAtMinutes = try container.decode(Int.self, forKey: .closesAtMinutes)
+        isOpen24Hours = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isOpen24Hours
+        ) ?? false
+    }
 
     static var standardWeek: [PlaceDayHours] {
         (1...7).map {
@@ -101,16 +151,84 @@ struct PlaceDayHours: Codable, Identifiable, Hashable {
         end: Date,
         calendar: Calendar = .current
     ) -> Bool {
-        guard calendar.component(.weekday, from: start) == weekday,
-              calendar.isDate(start, inSameDayAs: end) else {
+        let startDay = calendar.startOfDay(for: start)
+        let previousDay = calendar.date(byAdding: .day, value: -1, to: startDay)
+            ?? startDay
+        let openingDay: Date
+
+        if calendar.component(.weekday, from: startDay) == weekday {
+            openingDay = startDay
+        } else if calendar.component(.weekday, from: previousDay) == weekday {
+            openingDay = previousDay
+        } else {
             return false
         }
 
-        let startComponents = calendar.dateComponents([.hour, .minute], from: start)
-        let endComponents = calendar.dateComponents([.hour, .minute], from: end)
-        let startMinutes = (startComponents.hour ?? 0) * 60 + (startComponents.minute ?? 0)
-        let endMinutes = (endComponents.hour ?? 0) * 60 + (endComponents.minute ?? 0)
-        return startMinutes >= opensAtMinutes && endMinutes <= closesAtMinutes
+        guard let opening = calendar.date(
+            byAdding: .minute,
+            value: isOpen24Hours ? 0 : opensAtMinutes,
+            to: openingDay
+        ) else {
+            return false
+        }
+
+        let closing: Date?
+        if isOpen24Hours {
+            closing = calendar.date(byAdding: .day, value: 1, to: opening)
+        } else {
+            let closingDay = closesAtMinutes <= opensAtMinutes
+                ? calendar.date(byAdding: .day, value: 1, to: openingDay) ?? openingDay
+                : openingDay
+            closing = calendar.date(
+                byAdding: .minute,
+                value: closesAtMinutes,
+                to: closingDay
+            )
+        }
+
+        guard let closing else { return false }
+        return start >= opening && end <= closing
+    }
+
+    nonisolated static func contains(
+        _ hours: [PlaceDayHours],
+        start: Date,
+        end: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        hours.contains { $0.contains(start: start, end: end, calendar: calendar) }
+    }
+
+    nonisolated static func nextOpening(
+        after date: Date,
+        in hours: [PlaceDayHours],
+        calendar: Calendar = .current
+    ) -> Date? {
+        let startDay = calendar.startOfDay(for: date)
+        var openings: [Date] = []
+
+        for dayOffset in 0...7 {
+            guard let day = calendar.date(
+                byAdding: .day,
+                value: dayOffset,
+                to: startDay
+            ) else {
+                continue
+            }
+            let weekday = calendar.component(.weekday, from: day)
+            for interval in hours where interval.weekday == weekday {
+                guard let opening = calendar.date(
+                    byAdding: .minute,
+                    value: interval.isOpen24Hours ? 0 : interval.opensAtMinutes,
+                    to: day
+                ), opening > date else {
+                    continue
+                }
+                openings.append(opening)
+            }
+        }
+
+        return openings.min()
     }
 }
 
@@ -127,7 +245,12 @@ struct LifestyleProfile: Codable, Equatable {
     var protectWorkHours = true
     var protectSleep = true
     var usesHealthSleep = false
+    var travelMode: TravelMode? = .driving
     var placePreferences: [PlacePreference] = []
+
+    var effectiveTravelMode: TravelMode {
+        travelMode ?? .driving
+    }
 
     nonisolated func expectedOrigin(
         at date: Date,

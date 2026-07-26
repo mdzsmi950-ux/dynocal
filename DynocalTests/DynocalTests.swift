@@ -78,6 +78,20 @@ struct DynocalTests {
         #expect(ordered.map(\.id) == ["deadline", "none"])
     }
 
+    @Test func highPriorityOrDeadlineTasksCannotBeSilentlyDeferred() {
+        let ordinary = task(id: "ordinary", priority: .medium)
+        let high = task(id: "high", priority: .high)
+        let timed = task(
+            id: "timed",
+            priority: .low,
+            deadline: Date(timeIntervalSince1970: 30_000)
+        )
+
+        #expect(!ordinary.requiresGuaranteedPlacement)
+        #expect(high.requiresGuaranteedPlacement)
+        #expect(timed.requiresGuaranteedPlacement)
+    }
+
     @Test func lifestyleInfersWorkAndHomeOrigins() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -280,6 +294,82 @@ struct DynocalTests {
         ))
     }
 
+    @Test func overnightBusinessHoursContinueIntoNextDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let fridayNight = PlaceDayHours(
+            weekday: 6,
+            opensAtMinutes: 20 * 60,
+            closesAtMinutes: 2 * 60
+        )
+        let start = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 23, minute: 30)
+        )!
+        let end = start.addingTimeInterval(90 * 60)
+
+        #expect(fridayNight.contains(start: start, end: end, calendar: calendar))
+    }
+
+    @Test func multipleBusinessHourIntervalsAreSupportedPerDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let hours = [
+            PlaceDayHours(
+                weekday: 6,
+                opensAtMinutes: 9 * 60,
+                closesAtMinutes: 12 * 60
+            ),
+            PlaceDayHours(
+                weekday: 6,
+                opensAtMinutes: 14 * 60,
+                closesAtMinutes: 18 * 60
+            )
+        ]
+        let start = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 15)
+        )!
+
+        #expect(
+            PlaceDayHours.contains(
+                hours,
+                start: start,
+                end: start.addingTimeInterval(60 * 60),
+                calendar: calendar
+            )
+        )
+    }
+
+    @Test func closedPlaceAdvancesToNextSameDayOpening() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let hours = [
+            PlaceDayHours(
+                weekday: 6,
+                opensAtMinutes: 9 * 60,
+                closesAtMinutes: 12 * 60
+            ),
+            PlaceDayHours(
+                weekday: 6,
+                opensAtMinutes: 14 * 60,
+                closesAtMinutes: 18 * 60
+            )
+        ]
+        let afterLunch = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 12, minute: 30)
+        )!
+        let expected = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 14)
+        )!
+
+        #expect(
+            PlaceDayHours.nextOpening(
+                after: afterLunch,
+                in: hours,
+                calendar: calendar
+            ) == expected
+        )
+    }
+
     @Test func travelExtendsCalendarBlockWithoutChangingWorkDuration() {
         let start = Date(timeIntervalSince1970: 10_000)
         let task = DynocalTask(
@@ -298,7 +388,8 @@ struct DynocalTests {
             isMovable: true,
             requiresBusinessHours: true,
             reflowCount: 0,
-            manualOrder: nil
+            manualOrder: nil,
+            needsDetailsReview: false
         )
 
         #expect(task.durationMinutes == 30)
@@ -325,6 +416,34 @@ struct DynocalTests {
         #expect(place.query == "Costco")
         #expect(place.weeklyHours.isEmpty)
         #expect(place.hoursLastVerified == nil)
+    }
+
+    @Test func lifestyleProfileMigratesToDrivingWithoutLosingSettings() throws {
+        let legacyJSON = """
+        {
+          "completedOnboarding": true,
+          "lifestyleDescription": "Weekdays at the office",
+          "homeAddress": "100 Home Street",
+          "workAddress": "200 Work Avenue",
+          "workDays": [2, 3, 4, 5, 6],
+          "workStartMinutes": 540,
+          "workEndMinutes": 1020,
+          "sleepStartMinutes": 1380,
+          "sleepEndMinutes": 420,
+          "protectWorkHours": true,
+          "protectSleep": true,
+          "usesHealthSleep": false,
+          "placePreferences": []
+        }
+        """
+
+        let profile = try JSONDecoder().decode(
+            LifestyleProfile.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        #expect(profile.homeAddress == "100 Home Street")
+        #expect(profile.effectiveTravelMode == .driving)
     }
 
     @Test func preferredTimeIsAWindowNotAPriority() {
@@ -365,7 +484,8 @@ struct DynocalTests {
             isMovable: true,
             requiresBusinessHours: false,
             reflowCount: 0,
-            manualOrder: manualOrder
+            manualOrder: manualOrder,
+            needsDetailsReview: false
         )
     }
 

@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var interpretedTimePreference = ""
     @State private var interpretedAsFixed = false
     @State private var isManualMode = false
+    @State private var isShowingOptionalDetails = false
     @State private var isShowingSettings = false
     @State private var isShowingClarification = false
     @State private var clarificationIssues: [TaskClarificationIssue] = []
@@ -58,6 +59,8 @@ struct ContentView: View {
     @State private var isAdjustingPriority = false
     @State private var priorityDraftTaskIDs: [String] = []
     @State private var taskEditMode: EditMode = .inactive
+    @State private var taskNeedingReview: DynocalTask?
+    @State private var promptedReviewTaskIDs: Set<String> = []
 
     var body: some View {
         NavigationStack {
@@ -170,6 +173,24 @@ struct ContentView: View {
             }
             .onDisappear {
                 speechInput.stop()
+            }
+            .alert(
+                "Task Details Needed",
+                isPresented: Binding(
+                    get: { taskNeedingReview != nil },
+                    set: { if !$0 { taskNeedingReview = nil } }
+                ),
+                presenting: taskNeedingReview
+            ) { task in
+                Button("Review Now") {
+                    taskNeedingReview = nil
+                    beginEditing(task)
+                }
+                Button("Later", role: .cancel) {
+                    taskNeedingReview = nil
+                }
+            } message: { task in
+                Text("“\(task.title)” was added directly to the Dynocal calendar. Review its duration, priority, and whether Dynocal may reflow it.")
             }
         }
     }
@@ -431,8 +452,6 @@ struct ContentView: View {
     private var taskDetailControls: some View {
         TextField("Task Name", text: $newTaskTitle)
 
-        Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
-
         DatePicker(
             newTaskIsMovable ? "Earliest Start" : "Task Starts",
             selection: confirmedStartBinding,
@@ -459,53 +478,83 @@ struct ContentView: View {
             }
         }
 
-        Picker("Priority", selection: $newTaskPriority) {
-            ForEach(TaskPriority.allCases) { priority in
-                Text(priority.rawValue).tag(priority)
+        DisclosureGroup(
+            "Optional Details",
+            isExpanded: $isShowingOptionalDetails
+        ) {
+            Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
+
+            Toggle("Deadline", isOn: $newTaskHasDeadline)
+
+            if newTaskHasDeadline {
+                DatePicker(
+                    "Due",
+                    selection: $newTaskDeadline,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+            }
+
+            Picker("Preferred Time", selection: $interpretedTimePreference) {
+                Text("Any Time").tag("")
+                Text("Morning").tag("Morning")
+                Text("Afternoon").tag("Afternoon")
+                Text("Evening").tag("Evening")
+                Text("Night").tag("Night")
+            }
+
+            Picker("Where", selection: placeRequirementBinding) {
+                Text("Anywhere").tag(TaskPlaceRequirement.anywhere)
+                Text("At a Place").tag(TaskPlaceRequirement.destination)
+            }
+
+            if newTaskPlaceRequirement == .destination {
+                TextField(
+                    "Exact destination",
+                    text: confirmedLocationBinding
+                )
+
+                if let missingTravelAddressWarning {
+                    Text(missingTravelAddressWarning)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Toggle(
+                    "Place has opening hours",
+                    isOn: $newTaskRequiresBusinessHours
+                )
+            }
+
+            Picker("Category", selection: $newTaskCategory) {
+                ForEach(TaskCategory.allCases) { category in
+                    Text(category.rawValue).tag(category)
+                }
+            }
+
+            Picker("Priority", selection: $newTaskPriority) {
+                ForEach(TaskPriority.allCases) { priority in
+                    Text(priority.rawValue).tag(priority)
+                }
             }
         }
+    }
 
-        Picker("Preferred Time", selection: $interpretedTimePreference) {
-            Text("Any Time").tag("")
-            Text("Morning").tag("Morning")
-            Text("Afternoon").tag("Afternoon")
-            Text("Evening").tag("Evening")
-            Text("Night").tag("Night")
-        }
-
-        Toggle("Deadline", isOn: $newTaskHasDeadline)
-
-        if newTaskHasDeadline {
-            DatePicker(
-                "Due",
-                selection: $newTaskDeadline,
-                displayedComponents: [.date, .hourAndMinute]
-            )
-        }
-
-        Picker("Category", selection: $newTaskCategory) {
-            ForEach(TaskCategory.allCases) { category in
-                Text(category.rawValue).tag(category)
-            }
-        }
-
-        Picker("Where", selection: placeRequirementBinding) {
-            Text("Anywhere").tag(TaskPlaceRequirement.anywhere)
-            Text("At a Place").tag(TaskPlaceRequirement.destination)
-        }
-
-        if newTaskPlaceRequirement == .destination {
-            TextField(
-                "Exact destination",
-                text: confirmedLocationBinding
-            )
-        }
-
-        if newTaskPlaceRequirement == .destination {
-            Toggle(
-                "Place has opening hours",
-                isOn: $newTaskRequiresBusinessHours
-            )
+    private var missingTravelAddressWarning: String? {
+        let profile = preferences.profile
+        switch profile.expectedOrigin(at: newTaskStartDate) {
+        case .home where profile.homeAddress
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+            return "Travel time cannot be accounted for until a Home address is added in Settings."
+        case .work where profile.workAddress
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+            return "Travel time cannot be accounted for until a Work address is added in Settings."
+        case .either where profile.homeAddress
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && profile.workAddress
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+            return "Travel time cannot be accounted for until a Home or Work address is added in Settings."
+        default:
+            return nil
         }
     }
 
@@ -552,7 +601,11 @@ struct ContentView: View {
     @ViewBuilder
     private func taskStatusView(_ task: DynocalTask) -> some View {
         HStack(spacing: 6) {
-            if task.startDate < Date() {
+            if task.needsDetailsReview {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Needs task details")
+            } else if task.startDate < Date() {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
                     .accessibilityLabel("Overdue")
@@ -612,6 +665,7 @@ struct ContentView: View {
         interpretedTimePreference = ""
         interpretedAsFixed = false
         isManualMode = true
+        isShowingOptionalDetails = false
         clarificationIssues = []
         isShowingClarification = false
         dictationPrefix = ""
@@ -646,6 +700,7 @@ struct ContentView: View {
         interpretedTimePreference = task.preferredTimeOfDay
         interpretedAsFixed = false
         isManualMode = true
+        isShowingOptionalDetails = true
         clarificationIssues = []
         dictationPrefix = ""
         isShowingNewTaskSheet = true
@@ -720,6 +775,12 @@ struct ContentView: View {
                 interpretedTimePreference = draft.preferredTimeOfDay
                 interpretedAsFixed = draft.isFixed
                 newTaskIsMovable = !draft.isFixed
+                isShowingOptionalDetails = draft.isFixed
+                    || draft.deadline != nil
+                    || draft.placeRequirement == .destination
+                    || !draft.preferredTimeOfDay.isEmpty
+                    || draft.category != .none
+                    || draft.priority != .medium
 
                 if let startDate = draft.startDate {
                     newTaskStartDate = startDate
@@ -989,9 +1050,23 @@ struct ContentView: View {
         do {
             tasks = try calendarService.tasks()
             statusText = tasks.isEmpty ? nil : "Loaded \(tasks.count) task(s)"
+            promptForImportedTaskDetailsIfNeeded()
         } catch {
             statusText = "Could not load tasks: \(error.localizedDescription)"
         }
+    }
+
+    private func promptForImportedTaskDetailsIfNeeded() {
+        guard taskNeedingReview == nil,
+              !isShowingNewTaskSheet,
+              let task = tasks.first(where: {
+                  $0.needsDetailsReview && !promptedReviewTaskIDs.contains($0.id)
+              }) else {
+            return
+        }
+
+        promptedReviewTaskIDs.insert(task.id)
+        taskNeedingReview = task
     }
 
     private func upsertTask(_ task: DynocalTask) {
@@ -1106,7 +1181,13 @@ struct ContentView: View {
                 refreshTasks()
 
                 if result.updatedTasks.isEmpty {
-                    statusText = "You’re caught up — there are no overdue tasks."
+                    if result.deferredTasks.isEmpty {
+                        statusText = "You’re caught up — there are no overdue tasks."
+                    } else {
+                        statusText = "No safe opening was found for \(result.deferredTasks.count) low-urgency task(s) in the next seven days."
+                    }
+                } else if !result.deferredTasks.isEmpty {
+                    statusText = "Reflowed \(result.updatedTasks.count) task(s); kept \(result.deferredTasks.count) low-urgency task(s) overdue because no safe opening was found."
                 } else if result.skippedConflicts {
                     statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
                 } else {

@@ -31,7 +31,7 @@ struct PlaceHoursEditorView: View {
             } header: {
                 Text("Weekly Hours")
             } footer: {
-                Text("MapKit does not provide structured store hours. Review these against the business listing, then save them for future tasks.")
+                Text("Add split hours separately. A closing time earlier than opening means the place closes after midnight. MapKit does not provide structured store hours, so review these against the business listing.")
             }
 
             Section {
@@ -55,7 +55,11 @@ struct PlaceHoursEditorView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
-                    draft.weeklyHours.sort { $0.weekday < $1.weekday }
+                    draft.weeklyHours.sort {
+                        $0.weekday == $1.weekday
+                            ? $0.opensAtMinutes < $1.opensAtMinutes
+                            : $0.weekday < $1.weekday
+                    }
                     draft.hoursLastVerified = Date()
                     preferences.updatePlace(draft)
                     dismiss()
@@ -67,30 +71,68 @@ struct PlaceHoursEditorView: View {
 
     @ViewBuilder
     private func dayRow(_ weekday: Int) -> some View {
-        let isOpen = draft.weeklyHours.contains { $0.weekday == weekday }
+        let intervals = draft.weeklyHours.filter { $0.weekday == weekday }
 
         DisclosureGroup {
-            if isOpen {
-                DatePicker(
-                    "Opens",
-                    selection: hoursBinding(for: weekday, keyPath: \.opensAtMinutes),
-                    displayedComponents: .hourAndMinute
-                )
-                DatePicker(
-                    "Closes",
-                    selection: hoursBinding(for: weekday, keyPath: \.closesAtMinutes),
-                    displayedComponents: .hourAndMinute
-                )
+            ForEach(intervals) { interval in
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(
+                        "Open 24 Hours",
+                        isOn: intervalBinding(
+                            id: interval.id,
+                            keyPath: \.isOpen24Hours
+                        )
+                    )
+
+                    if !interval.isOpen24Hours {
+                        DatePicker(
+                            "Opens",
+                            selection: hoursBinding(
+                                id: interval.id,
+                                keyPath: \.opensAtMinutes
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                        DatePicker(
+                            "Closes",
+                            selection: hoursBinding(
+                                id: interval.id,
+                                keyPath: \.closesAtMinutes
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                    }
+
+                    if intervals.count > 1 {
+                        Button("Remove These Hours", role: .destructive) {
+                            draft.weeklyHours.removeAll { $0.id == interval.id }
+                        }
+                    }
+                }
+            }
+
+            if !intervals.isEmpty {
+                Button {
+                    draft.weeklyHours.append(
+                        PlaceDayHours(
+                            weekday: weekday,
+                            opensAtMinutes: 17 * 60,
+                            closesAtMinutes: 20 * 60
+                        )
+                    )
+                } label: {
+                    Label("Add Another Open Interval", systemImage: "plus")
+                }
             }
         } label: {
             Toggle(
                 Calendar.current.weekdaySymbols[weekday - 1],
-                isOn: openBinding(for: weekday)
+                isOn: dayOpenBinding(for: weekday)
             )
         }
     }
 
-    private func openBinding(for weekday: Int) -> Binding<Bool> {
+    private func dayOpenBinding(for weekday: Int) -> Binding<Bool> {
         Binding(
             get: {
                 draft.weeklyHours.contains { $0.weekday == weekday }
@@ -115,13 +157,13 @@ struct PlaceHoursEditorView: View {
     }
 
     private func hoursBinding(
-        for weekday: Int,
+        id: UUID,
         keyPath: WritableKeyPath<PlaceDayHours, Int>
     ) -> Binding<Date> {
         Binding(
             get: {
                 let minutes = draft.weeklyHours
-                    .first(where: { $0.weekday == weekday })?[keyPath: keyPath]
+                    .first(where: { $0.id == id })?[keyPath: keyPath]
                     ?? 9 * 60
                 return Calendar.current.date(
                     bySettingHour: minutes / 60,
@@ -132,13 +174,33 @@ struct PlaceHoursEditorView: View {
             },
             set: { date in
                 guard let index = draft.weeklyHours.firstIndex(where: {
-                    $0.weekday == weekday
+                    $0.id == id
                 }) else {
                     return
                 }
                 let components = Calendar.current.dateComponents([.hour, .minute], from: date)
                 draft.weeklyHours[index][keyPath: keyPath] =
                     (components.hour ?? 0) * 60 + (components.minute ?? 0)
+            }
+        )
+    }
+
+    private func intervalBinding<Value>(
+        id: UUID,
+        keyPath: WritableKeyPath<PlaceDayHours, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: {
+                guard let interval = draft.weeklyHours.first(where: { $0.id == id }) else {
+                    preconditionFailure("Missing place-hours interval")
+                }
+                return interval[keyPath: keyPath]
+            },
+            set: { value in
+                guard let index = draft.weeklyHours.firstIndex(where: { $0.id == id }) else {
+                    return
+                }
+                draft.weeklyHours[index][keyPath: keyPath] = value
             }
         )
     }
