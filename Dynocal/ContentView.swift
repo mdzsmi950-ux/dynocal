@@ -273,7 +273,10 @@ struct ContentView: View {
     private var completedHistorySection: some View {
         Section {
             NavigationLink {
-                CompletedTasksView()
+                CompletedTasksView { restoredTask in
+                    upsertTask(restoredTask)
+                    statusText = "Recovered \(restoredTask.title)."
+                }
             } label: {
                 HStack {
                     Label("Completed", systemImage: "checkmark.circle")
@@ -318,19 +321,28 @@ struct ContentView: View {
 
                         Spacer()
 
-                        Button {
-                            interpretTaskDescription()
-                        } label: {
-                            Label(
-                                isInterpretingTask ? "Understanding..." : "Fill Details",
-                                systemImage: "apple.intelligence"
+                        switch taskInterpreter.availability {
+                        case .available:
+                            Button {
+                                interpretTaskDescription()
+                            } label: {
+                                Label(
+                                    isInterpretingTask ? "Understanding..." : "Fill Details",
+                                    systemImage: "apple.intelligence"
+                                )
+                            }
+                            .disabled(
+                                newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || isInterpretingTask
+                                    || speechInput.isRecording
                             )
+                        case .unavailable:
+                            Button {
+                                enterManualMode()
+                            } label: {
+                                Label("Enter Manually", systemImage: "slider.horizontal.3")
+                            }
                         }
-                        .disabled(
-                            newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || isInterpretingTask
-                                || speechInput.isRecording
-                        )
                     }
 
                     if let message = speechInput.message ?? taskInterpretationMessage {
@@ -344,7 +356,7 @@ struct ContentView: View {
                 }
 
                 Section {
-                    DisclosureGroup("Review details", isExpanded: $isShowingTaskDetails) {
+                    DisclosureGroup("Task details", isExpanded: $isShowingTaskDetails) {
                         TextField("Task Name", text: $newTaskTitle)
 
                         DatePicker(
@@ -401,8 +413,6 @@ struct ContentView: View {
                             LabeledContent("Scheduling", value: "Fixed time")
                         }
                     }
-                } header: {
-                    Text("Optional")
                 }
             }
             .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
@@ -498,6 +508,11 @@ struct ContentView: View {
         interpretedAsFixed = false
         isShowingTaskDetails = false
         dictationPrefix = ""
+
+        if case .unavailable(let reason) = taskInterpreter.availability {
+            taskInterpretationMessage = "\(reason) Enter the task details manually."
+        }
+
         isShowingNewTaskSheet = true
     }
 
@@ -607,6 +622,18 @@ struct ContentView: View {
             }
 
             isInterpretingTask = false
+        }
+    }
+
+    private func enterManualMode() {
+        let description = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            newTaskTitle = description
+        }
+
+        withAnimation {
+            isShowingTaskDetails = true
         }
     }
 
@@ -833,6 +860,9 @@ struct ContentView: View {
 }
 
 private struct CompletedTasksView: View {
+    private let calendarService = CalendarService.shared
+    let onRecover: (DynocalTask) -> Void
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CompletedTaskRecord.completedAt, order: .reverse)
     private var completedTasks: [CompletedTaskRecord]
@@ -877,6 +907,14 @@ private struct CompletedTasksView: View {
                             .foregroundStyle(.tertiary)
                     }
                     .padding(.vertical, 4)
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        Button {
+                            recoverCompletedTask(task)
+                        } label: {
+                            Label("Recover", systemImage: "arrow.uturn.backward.circle.fill")
+                        }
+                        .tint(.green)
+                    }
                 }
                 .onDelete(perform: deleteCompletedTasks)
             }
@@ -919,6 +957,26 @@ private struct CompletedTasksView: View {
         saveChanges()
     }
 
+    private func recoverCompletedTask(_ task: CompletedTaskRecord) {
+        do {
+            let restoredTask = try calendarService.restoreTask(task.deletedTask)
+            modelContext.delete(task)
+
+            do {
+                try modelContext.save()
+            } catch {
+                _ = try? calendarService.completeTask(id: restoredTask.id)
+                modelContext.rollback()
+                throw error
+            }
+
+            errorMessage = nil
+            onRecover(restoredTask)
+        } catch {
+            errorMessage = "Could not recover \(task.title): \(error.localizedDescription)"
+        }
+    }
+
     private func deleteAllCompletedTasks() {
         for task in completedTasks {
             modelContext.delete(task)
@@ -949,10 +1007,12 @@ private struct PButton: View {
 
     private let buttonColor = Color(uiColor: .systemBlue)
 
-    @State private var holdProgress = 0.0
     @State private var isHolding = false
     @State private var didConfirm = false
     @State private var orbitStartedAt = Date()
+    @State private var orbitBaseAngle = 0.0
+    @State private var heldAngle = 0.0
+    @State private var holdStartedAt: Date?
 
     private let holdDuration = 1.4
     private let orbitDuration = 18.0
@@ -960,24 +1020,37 @@ private struct PButton: View {
     var body: some View {
         VStack(spacing: 8) {
             TimelineView(.animation) { timeline in
-                let dotAngle = orbitAngle(at: timeline.date)
+                let progress = holdProgress(at: timeline.date)
+                let dotAngle = isHolding
+                    ? heldAngle + (progress * 360)
+                    : orbitAngle(at: timeline.date)
 
                 ZStack {
-                    Circle()
-                        .fill(buttonColor)
-                        .frame(width: 9, height: 9)
-                        .offset(y: -40)
-                        .rotationEffect(.degrees(dotAngle))
-                        .opacity(isProcessing ? 0.35 : 0.9)
+                    if isHolding {
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                buttonColor,
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(heldAngle - 90))
+                    }
 
                     Circle()
                         .fill(buttonColor)
                         .frame(width: 68, height: 68)
                         .shadow(color: buttonColor.opacity(0.3), radius: 12, y: 5)
 
-                    if isHolding || didConfirm || isProcessing {
+                    Circle()
+                        .fill(buttonColor)
+                        .frame(width: 10, height: 10)
+                        .offset(y: -40)
+                        .rotationEffect(.degrees(dotAngle))
+                        .opacity(isProcessing ? 0.35 : 0.9)
+
+                    if didConfirm || isProcessing {
                         ReflowCheckmark()
-                            .trim(from: 0, to: didConfirm || isProcessing ? 1 : holdProgress)
                             .stroke(
                                 .white,
                                 style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
@@ -1010,7 +1083,6 @@ private struct PButton: View {
                     await MainActor.run {
                         withAnimation(.easeOut(duration: 0.2)) {
                             didConfirm = false
-                            holdProgress = 0
                         }
                     }
                 }
@@ -1030,33 +1102,50 @@ private struct PButton: View {
         guard !isProcessing, overdueTaskCount > 0 else { return }
 
         if isPressing {
+            let now = Date()
             didConfirm = false
-            holdProgress = 0
+            heldAngle = orbitAngle(at: now)
+            holdStartedAt = now
             isHolding = true
-
-            withAnimation(.linear(duration: holdDuration)) {
-                holdProgress = 1
-            }
         } else if !didConfirm {
-            withAnimation(.easeOut(duration: 0.2)) {
-                holdProgress = 0
-            }
+            let now = Date()
+            orbitBaseAngle = normalizedAngle(
+                heldAngle + (holdProgress(at: now) * 360)
+            )
+            orbitStartedAt = now
             isHolding = false
+            holdStartedAt = nil
         }
     }
 
     private func confirm() {
         guard !isProcessing, overdueTaskCount > 0 else { return }
 
-        didConfirm = true
-        holdProgress = 1
+        let now = Date()
+        orbitBaseAngle = normalizedAngle(heldAngle)
+        orbitStartedAt = now
+        holdStartedAt = nil
         isHolding = false
+        didConfirm = true
         action()
     }
 
     private func orbitAngle(at date: Date) -> Double {
-        date.timeIntervalSince(orbitStartedAt)
-            .truncatingRemainder(dividingBy: orbitDuration) / orbitDuration * 360
+        normalizedAngle(
+            orbitBaseAngle
+                + date.timeIntervalSince(orbitStartedAt)
+                    .truncatingRemainder(dividingBy: orbitDuration) / orbitDuration * 360
+        )
+    }
+
+    private func holdProgress(at date: Date) -> Double {
+        guard isHolding, let holdStartedAt else { return 0 }
+        return min(max(date.timeIntervalSince(holdStartedAt) / holdDuration, 0), 1)
+    }
+
+    private func normalizedAngle(_ angle: Double) -> Double {
+        let remainder = angle.truncatingRemainder(dividingBy: 360)
+        return remainder >= 0 ? remainder : remainder + 360
     }
 }
 
