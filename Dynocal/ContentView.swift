@@ -49,7 +49,6 @@ struct ContentView: View {
     @State private var interpretedTimePreference = ""
     @State private var interpretedAsFixed = false
     @State private var isManualMode = false
-    @State private var isShowingTaskDetails = false
     @State private var isShowingSettings = false
     @State private var isShowingClarification = false
     @State private var clarificationIssues: [TaskClarificationIssue] = []
@@ -237,7 +236,7 @@ struct ContentView: View {
                     Text("No Tasks")
                         .font(.headline)
 
-                    Label("Tap + above to add a task.", systemImage: "plus")
+                    Text("Tap + above to add a task.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -336,55 +335,32 @@ struct ContentView: View {
                         Button {
                             toggleVoiceInput()
                         } label: {
-                            Label(
-                                speechInput.isRecording ? "Stop" : "Speak",
-                                systemImage: speechInput.isRecording ? "stop.fill" : "mic.fill"
-                            )
+                            Image(systemName: speechInput.isRecording ? "stop.fill" : "mic.fill")
                         }
+                        .accessibilityLabel(speechInput.isRecording ? "Stop speaking" : "Speak")
                         .tint(speechInput.isRecording ? .red : .accentColor)
                         .buttonStyle(.borderless)
 
                         Spacer()
 
-                        if isManualMode {
-                            Label("Manual Entry", systemImage: "slider.horizontal.3")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            switch taskInterpreter.availability {
-                            case .available:
-                                Button {
-                                    interpretTaskDescription()
-                                } label: {
-                                    Label(
-                                        isInterpretingTask
-                                            ? "Analyzing..."
-                                            : "Analyze with Apple Intelligence",
-                                        systemImage: "apple.intelligence"
-                                    )
-                                }
-                                .disabled(
-                                    newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                        || isInterpretingTask
-                                        || speechInput.isRecording
+                        switch taskInterpreter.availability {
+                        case .available:
+                            Button {
+                                interpretTaskDescription()
+                            } label: {
+                                Label(
+                                    isInterpretingTask ? "Analyzing..." : "Analyze",
+                                    systemImage: "apple.intelligence"
                                 )
-                                .buttonStyle(.borderless)
-
-                                Button {
-                                    enterManualMode()
-                                } label: {
-                                    Image(systemName: "slider.horizontal.3")
-                                }
-                                .accessibilityLabel("Enter manually")
-                                .buttonStyle(.borderless)
-                            case .unavailable:
-                                Button {
-                                    enterManualMode()
-                                } label: {
-                                    Label("Enter Manually", systemImage: "slider.horizontal.3")
-                                }
-                                .buttonStyle(.borderless)
                             }
+                            .disabled(
+                                newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || isInterpretingTask
+                                    || speechInput.isRecording
+                            )
+                            .buttonStyle(.borderless)
+                        case .unavailable:
+                            EmptyView()
                         }
                     }
 
@@ -398,24 +374,16 @@ struct ContentView: View {
                     }
                 }
 
-                if isManualMode {
-                    Section("Task Details") {
-                        taskDetailControls
-                    }
+                Section("Task Details") {
+                    taskDetailControls
+                }
 
-                    Section {
-                        manualCompletenessChecklist
-                    } header: {
-                        Text(manualIssues.isEmpty ? "Complete" : "Still Needed")
-                    } footer: {
-                        Text("Dynocal uses the same scheduling rules with or without Apple Intelligence.")
-                    }
-                } else {
-                    Section {
-                        DisclosureGroup("Task details", isExpanded: $isShowingTaskDetails) {
-                            taskDetailControls
-                        }
-                    }
+                Section {
+                    manualCompletenessChecklist
+                } header: {
+                    Text(manualIssues.isEmpty ? "Complete" : "Still Needed")
+                } footer: {
+                    Text("Dynocal uses the same scheduling rules with or without Apple Intelligence.")
                 }
             }
             .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
@@ -453,7 +421,6 @@ struct ContentView: View {
                     }
                 ) {
                     refreshClarificationIssues()
-                    isShowingTaskDetails = true
                 }
                 .environmentObject(preferences)
             }
@@ -479,15 +446,13 @@ struct ContentView: View {
             step: 5
         )
 
-        if isManualMode,
-           ![TaskFactSource.explicit, .userConfirmed].contains(newTaskDurationSource) {
+        if ![TaskFactSource.explicit, .userConfirmed].contains(newTaskDurationSource) {
             Button("Confirm \(newTaskDurationMinutes) Minutes") {
                 newTaskDurationSource = .userConfirmed
             }
         }
 
-        if isManualMode,
-           !newTaskIsMovable,
+        if !newTaskIsMovable,
            ![TaskFactSource.explicit, .userConfirmed].contains(newTaskStartSource) {
             Button("Confirm This Start Time") {
                 newTaskStartSource = .userConfirmed
@@ -524,16 +489,14 @@ struct ContentView: View {
             }
         }
 
-        if isManualMode {
-            Picker("Where", selection: placeRequirementBinding) {
-                Text("Anywhere").tag(TaskPlaceRequirement.anywhere)
-                Text("At a Place").tag(TaskPlaceRequirement.destination)
-            }
+        Picker("Where", selection: placeRequirementBinding) {
+            Text("Anywhere").tag(TaskPlaceRequirement.anywhere)
+            Text("At a Place").tag(TaskPlaceRequirement.destination)
         }
 
-        if !isManualMode || newTaskPlaceRequirement == .destination {
+        if newTaskPlaceRequirement == .destination {
             TextField(
-                isManualMode ? "Exact destination" : "Location",
+                "Exact destination",
                 text: confirmedLocationBinding
             )
         }
@@ -615,8 +578,7 @@ struct ContentView: View {
     private var canCreateTask: Bool {
         (
             !newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || (isManualMode
-                    && !newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                || !newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
             && hasCalendarAccess
             && !isCreatingTask
@@ -649,15 +611,12 @@ struct ContentView: View {
         taskInterpretationMessage = nil
         interpretedTimePreference = ""
         interpretedAsFixed = false
-        isManualMode = false
+        isManualMode = true
         clarificationIssues = []
         isShowingClarification = false
-        isShowingTaskDetails = false
         dictationPrefix = ""
 
         if case .unavailable(let reason) = taskInterpreter.availability {
-            isManualMode = true
-            isShowingTaskDetails = true
             taskInterpretationMessage = "\(reason) Manual entry is ready."
         }
 
@@ -688,7 +647,6 @@ struct ContentView: View {
         interpretedAsFixed = false
         isManualMode = true
         clarificationIssues = []
-        isShowingTaskDetails = true
         dictationPrefix = ""
         isShowingNewTaskSheet = true
     }
@@ -736,7 +694,7 @@ struct ContentView: View {
         case .available:
             break
         case .unavailable(let reason):
-            enterManualMode()
+            isManualMode = true
             taskInterpretationMessage = "\(reason) Manual entry is ready."
             return
         }
@@ -786,7 +744,6 @@ struct ContentView: View {
                     newTaskDestinationSource = .rememberedPreference
                 }
 
-                isShowingTaskDetails = true
                 refreshClarificationIssues()
                 isShowingClarification = !clarificationIssues.isEmpty
 
@@ -796,30 +753,12 @@ struct ContentView: View {
                     taskInterpretationMessage = "Analyzed with Apple Intelligence. Review before creating."
                 }
             } catch {
+                isManualMode = true
                 taskInterpretationMessage = "Apple Intelligence couldn’t fill the details: \(error.localizedDescription)"
-                isShowingTaskDetails = true
             }
 
             isInterpretingTask = false
         }
-    }
-
-    private func enterManualMode() {
-        let description = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !description.isEmpty {
-            newTaskTitle = description
-                .split(whereSeparator: \.isWhitespace)
-                .prefix(5)
-                .joined(separator: " ")
-        }
-
-        withAnimation {
-            isManualMode = true
-            isShowingTaskDetails = true
-        }
-        taskInterpretationMessage = "Manual entry uses the same scheduling checks as Apple Intelligence."
     }
 
     private var clarificationOrigin: PlaceOrigin {
