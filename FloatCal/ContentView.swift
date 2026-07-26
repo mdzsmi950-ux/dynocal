@@ -430,6 +430,7 @@ struct ContentView: View {
                     locationQuery: newTaskDestinationQuery,
                     origin: clarificationOrigin,
                     originAddress: clarificationOriginAddress,
+                    confirmationTitle: editingTask == nil ? "Create Task" : "Save Task",
                     title: $newTaskTitle,
                     durationMinutes: confirmedDurationBinding,
                     startDate: confirmedStartBinding,
@@ -441,7 +442,7 @@ struct ContentView: View {
                         refreshClarificationIssues()
                     }
                 ) {
-                    refreshClarificationIssues()
+                    saveTask()
                 }
                 .environmentObject(preferences)
             }
@@ -1372,6 +1373,7 @@ private struct TaskClarificationView: View {
     let locationQuery: String
     let origin: PlaceOrigin
     let originAddress: String
+    let confirmationTitle: String
     @Binding var title: String
     @Binding var durationMinutes: Int
     @Binding var startDate: Date
@@ -1586,7 +1588,7 @@ private struct TaskClarificationView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Continue") {
+                    Button(confirmationTitle) {
                         onConfirm()
                         dismiss()
                     }
