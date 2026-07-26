@@ -312,6 +312,210 @@ struct FloatCalTests {
         )
     }
 
+    @Test func nearbyYearlessDatesStayInCurrentYearEvenWhenOverdue() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 26,
+                hour: 14
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: """
+                Submit expense report. It takes 25 minutes.
+                Earliest start July 25 at 7:00 PM. High priority.
+                Deadline July 26 at noon. Movable.
+                """,
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(
+                year: 2026,
+                month: 7,
+                day: 25,
+                hour: 19,
+                minute: 0
+            )
+        )
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.deadline!
+            ) == DateComponents(
+                year: 2026,
+                month: 7,
+                day: 26,
+                hour: 12,
+                minute: 0
+            )
+        )
+        #expect(facts.durationMinutes == 25)
+        #expect(facts.priority == .high)
+        #expect(facts.isFixed == false)
+    }
+
+    @Test func lateYearReferenceToJanuaryRollsIntoNextYear() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 12,
+                day: 20,
+                hour: 12
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "File taxes. Earliest start January 10 at 9:00 AM. Movable.",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(
+                year: 2027,
+                month: 1,
+                day: 10,
+                hour: 9,
+                minute: 0
+            )
+        )
+    }
+
+    @Test func explicitYearIsNeverChanged() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 26,
+                hour: 12
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Review records from July 25, 2025 at 7:00 PM. Movable.",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.component(.year, from: facts.startDate!) == 2025
+        )
+    }
+
+    @Test func weekdayMeansUpcomingOccurrence() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let saturday = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 25,
+                hour: 12
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Call the venue Tuesday at 3:30 PM. Movable.",
+            now: saturday,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(
+                year: 2026,
+                month: 7,
+                day: 28,
+                hour: 15,
+                minute: 30
+            )
+        )
+    }
+
+    @Test func sameWeekdayPastTimeMeansNextWeek() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let tuesday = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 28,
+                hour: 16
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Call the venue Tuesday at 3:30 PM. Movable.",
+            now: tuesday,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(
+                year: 2026,
+                month: 8,
+                day: 4,
+                hour: 15,
+                minute: 30
+            )
+        )
+    }
+
+    @Test func weekdayDeadlineIsNotMistakenForAFixedStart() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let saturday = calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 25,
+                hour: 12
+            )
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Submit the report by Tuesday at 5:00 PM.",
+            now: saturday,
+            calendar: calendar
+        )
+
+        #expect(facts.startDate == nil)
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.deadline!
+            ) == DateComponents(
+                year: 2026,
+                month: 7,
+                day: 28,
+                hour: 17,
+                minute: 0
+            )
+        )
+        #expect(facts.isFixed == nil)
+    }
+
     @Test func timeOfDayMustBeExplicit() {
         #expect(!TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter during the sale"))
         #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter in the evening"))

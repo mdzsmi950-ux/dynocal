@@ -60,7 +60,7 @@ nonisolated struct TaskTextConstraints {
             facts.deadline = window.deadline
         }
 
-        for detected in statedDates(in: text) {
+        for detected in statedDates(in: text, now: now, calendar: calendar) {
             if detected.isDeadline {
                 if facts.deadline == nil {
                     facts.deadline = detected.date
@@ -85,6 +85,11 @@ nonisolated struct TaskTextConstraints {
             )
             facts.isFixed = true
         } else if mentionsNamedCalendarDay(in: text),
+                  !explicitlyAllowsReflow(in: text),
+                  !mentionsEarliestConstraint(in: text),
+                  (!mentionsDeadline(in: text)
+                    || explicitlyPreventsReflow(in: text)
+                    || impliesFixedCommitment(in: text)),
                   let clock = exactClock(in: text),
                   let day = statedDay(in: text, now: now, calendar: calendar),
                   let start = date(on: day, clock: clock, calendar: calendar) {
@@ -154,60 +159,50 @@ nonisolated struct TaskTextConstraints {
             return nil
         }
 
-        let currentYear = calendar.component(.year, from: now)
-        var startYear = startParts.year ?? currentYear
-        var start = calendar.date(
-            from: DateComponents(
-                year: startYear,
-                month: startParts.month,
-                day: startParts.day,
-                hour: 0
-            )
-        )
-
-        if startParts.year == nil,
-           let candidate = start,
-           candidate < calendar.startOfDay(for: now) {
-            startYear += 1
-            start = calendar.date(
-                from: DateComponents(
-                    year: startYear,
-                    month: startParts.month,
-                    day: startParts.day,
-                    hour: 0
-                )
-            )
+        guard let start = resolvedMonthDay(
+            month: startParts.month,
+            day: startParts.day,
+            explicitYear: startParts.year,
+            clock: Clock(hour: 0, minute: 0),
+            now: now,
+            calendar: calendar
+        ) else {
+            return nil
         }
-
+        let startYear = calendar.component(.year, from: start)
         var endYear = endParts.year ?? startYear
-        var end = calendar.date(
-            from: DateComponents(
-                year: endYear,
-                month: endParts.month,
-                day: endParts.day,
-                hour: 23,
-                minute: 59
-            )
+        var end = validatedDate(
+            year: endYear,
+            month: endParts.month,
+            day: endParts.day,
+            clock: Clock(hour: 23, minute: 59),
+            calendar: calendar
         )
 
         if endParts.year == nil,
-           let start,
            let candidate = end,
            candidate < start {
             endYear += 1
-            end = calendar.date(
-                from: DateComponents(
-                    year: endYear,
-                    month: endParts.month,
-                    day: endParts.day,
-                    hour: 23,
-                    minute: 59
-                )
+            end = validatedDate(
+                year: endYear,
+                month: endParts.month,
+                day: endParts.day,
+                clock: Clock(hour: 23, minute: 59),
+                calendar: calendar
             )
         }
 
-        guard let start, let end, end >= start else { return nil }
+        guard let end, end >= start else { return nil }
         return StatedDateRange(earliestStart: start, deadline: end)
+    }
+
+    nonisolated static func hasDeterministicCalendarReference(
+        in text: String
+    ) -> Bool {
+        text.range(
+            of: #"(?i)\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+            options: .regularExpression
+        ) != nil
     }
 
     nonisolated static func hasExplicitTimeOfDay(in text: String) -> Bool {
@@ -381,8 +376,12 @@ nonisolated struct TaskTextConstraints {
     }
 
     private static func mentionsNamedCalendarDay(in text: String) -> Bool {
+        hasDeterministicCalendarReference(in: text)
+    }
+
+    private static func mentionsEarliestConstraint(in text: String) -> Bool {
         text.range(
-            of: #"(?i)\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+            of: #"(?i)\b(earliest(?:\s+start)?|not\s+before|after)\b"#,
             options: .regularExpression
         ) != nil
     }
@@ -445,16 +444,9 @@ nonisolated struct TaskTextConstraints {
             return calendar.startOfDay(for: now)
         }
 
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.date.rawValue
-        ) else {
-            return nil
-        }
-        let matches = detector.matches(
-            in: text,
-            range: NSRange(text.startIndex..., in: text)
-        )
-        return matches.compactMap(\.date).first
+        return statedDates(in: text, now: now, calendar: calendar)
+            .first
+            .map { calendar.startOfDay(for: $0.date) }
     }
 
     private static func statedDuration(in text: String) -> Int? {
@@ -486,40 +478,264 @@ nonisolated struct TaskTextConstraints {
     }
 
     private static func statedDates(
-        in text: String
+        in text: String,
+        now: Date,
+        calendar: Calendar
     ) -> [(date: Date, isDeadline: Bool)] {
-        guard mentionsTiming(in: text),
-              let detector = try? NSDataDetector(
-                types: NSTextCheckingResult.CheckingType.date.rawValue
-              ) else {
-            return []
-        }
+        guard mentionsTiming(in: text) else { return [] }
         let source = text as NSString
-        return detector.matches(
-            in: text,
-            range: NSRange(text.startIndex..., in: text)
-        ).compactMap { match in
-            guard let date = match.date else { return nil }
-            let matchedText = source.substring(with: match.range)
-            if matchedText.range(
-                of: #"(?i)^\s*\d+(?:\.\d+)?\s*(?:minutes?|mins?|hours?|hrs?)\s*$"#,
-                options: .regularExpression
-            ) != nil {
-                return nil
-            }
+        let fullRange = NSRange(text.startIndex..., in: text)
+        var results: [(date: Date, isDeadline: Bool)] = []
 
-            let prefixLength = min(match.range.location, 35)
-            let contextRange = NSRange(
+        let monthPattern = #"(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?"#
+        if let regex = try? NSRegularExpression(pattern: monthPattern) {
+            let matches = regex.matches(in: text, range: fullRange)
+            for (index, match) in matches.enumerated() {
+                guard let parts = dateParts(from: match, text: text) else {
+                    continue
+                }
+                let nextLocation = index + 1 < matches.count
+                    ? matches[index + 1].range.location
+                    : source.length
+                let isDeadline = isDeadlineReference(
+                    match: match,
+                    source: source
+                )
+                let clock = clockFollowing(
+                    match: match,
+                    before: nextLocation,
+                    source: source
+                ) ?? (isDeadline
+                    ? Clock(hour: 23, minute: 59)
+                    : Clock(hour: 0, minute: 0))
+                guard let date = resolvedMonthDay(
+                    month: parts.month,
+                    day: parts.day,
+                    explicitYear: parts.year,
+                    clock: clock,
+                    now: now,
+                    calendar: calendar
+                ) else {
+                    continue
+                }
+                results.append((date, isDeadline))
+            }
+        }
+
+        let weekdayPattern = #"(?i)\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b"#
+        if let regex = try? NSRegularExpression(pattern: weekdayPattern) {
+            for match in regex.matches(in: text, range: fullRange) {
+                let prefixLength = min(match.range.location, 25)
+                let prefix = source.substring(
+                    with: NSRange(
+                        location: match.range.location - prefixLength,
+                        length: prefixLength
+                    )
+                )
+                if prefix.range(
+                    of: #"(?i)\b(open|opens|opening|hours?)\b"#,
+                    options: .regularExpression
+                ) != nil {
+                    continue
+                }
+                let name = source.substring(with: match.range).lowercased()
+                let names = [
+                    "sunday", "monday", "tuesday", "wednesday",
+                    "thursday", "friday", "saturday"
+                ]
+                guard let index = names.firstIndex(of: name) else { continue }
+                let isDeadline = isDeadlineReference(
+                    match: match,
+                    source: source
+                )
+                let suppliedClock = clockFollowing(
+                    match: match,
+                    before: source.length,
+                    source: source
+                )
+                guard let date = resolvedWeekday(
+                    weekday: index + 1,
+                    clock: suppliedClock,
+                    isDeadline: isDeadline,
+                    now: now,
+                    calendar: calendar
+                ) else {
+                    continue
+                }
+                results.append((date, isDeadline))
+            }
+        }
+        return results.sorted { $0.date < $1.date }
+    }
+
+    private static func isDeadlineReference(
+        match: NSTextCheckingResult,
+        source: NSString
+    ) -> Bool {
+        let prefixLength = min(match.range.location, 40)
+        let context = source.substring(
+            with: NSRange(
                 location: match.range.location - prefixLength,
                 length: prefixLength + match.range.length
             )
-            let context = source.substring(with: contextRange)
-            let isDeadline = context.range(
-                of: #"(?i)\b(deadline|due|by|before|until|through|last\s+day|ends?)\b"#,
-                options: .regularExpression
-            ) != nil
-            return (date, isDeadline)
+        )
+        return context.range(
+            of: #"(?i)\b(deadline|due|by|before|until|through|last\s+day|ends?)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func clockFollowing(
+        match: NSTextCheckingResult,
+        before boundary: Int,
+        source: NSString
+    ) -> Clock? {
+        let start = match.range.location + match.range.length
+        let length = min(max(0, boundary - start), 35)
+        guard length > 0 else { return nil }
+        let suffix = source.substring(
+            with: NSRange(location: start, length: length)
+        )
+        let pattern = #"(?i)^\s*(?:at\s+)?(?:(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)|(noon|midnight))\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let clockMatch = regex.firstMatch(
+                in: suffix,
+                range: NSRange(suffix.startIndex..., in: suffix)
+              ) else {
+            return nil
         }
+        let clockSource = suffix as NSString
+        if let word = stringCapture(4, match: clockMatch, source: clockSource) {
+            return word.lowercased() == "noon"
+                ? Clock(hour: 12, minute: 0)
+                : Clock(hour: 0, minute: 0)
+        }
+        guard let hour = intCapture(1, match: clockMatch, source: clockSource),
+              let marker = stringCapture(3, match: clockMatch, source: clockSource) else {
+            return nil
+        }
+        return normalizedClock(
+            hour: hour,
+            minute: intCapture(2, match: clockMatch, source: clockSource) ?? 0,
+            marker: marker
+        )
+    }
+
+    private static func resolvedMonthDay(
+        month: Int,
+        day: Int,
+        explicitYear: Int?,
+        clock: Clock,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        if let explicitYear {
+            return validatedDate(
+                year: explicitYear,
+                month: month,
+                day: day,
+                clock: clock,
+                calendar: calendar
+            )
+        }
+
+        let currentYear = calendar.component(.year, from: now)
+        guard let currentYearDate = validatedDate(
+            year: currentYear,
+            month: month,
+            day: day,
+            clock: clock,
+            calendar: calendar
+        ) else {
+            return nil
+        }
+        let sixMonthsAgo = calendar.date(
+            byAdding: .month,
+            value: -6,
+            to: now
+        ) ?? now
+        if currentYearDate < sixMonthsAgo {
+            return validatedDate(
+                year: currentYear + 1,
+                month: month,
+                day: day,
+                clock: clock,
+                calendar: calendar
+            )
+        }
+        return currentYearDate
+    }
+
+    private static func resolvedWeekday(
+        weekday: Int,
+        clock: Clock?,
+        isDeadline: Bool,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        let today = calendar.startOfDay(for: now)
+        let currentWeekday = calendar.component(.weekday, from: today)
+        var daysAhead = (weekday - currentWeekday + 7) % 7
+        let effectiveClock = clock ?? (isDeadline
+            ? Clock(hour: 23, minute: 59)
+            : Clock(hour: 0, minute: 0))
+        guard var day = calendar.date(
+            byAdding: .day,
+            value: daysAhead,
+            to: today
+        ),
+        var candidate = date(
+            on: day,
+            clock: effectiveClock,
+            calendar: calendar
+        ) else {
+            return nil
+        }
+        if daysAhead == 0, clock != nil, candidate <= now {
+            daysAhead = 7
+            day = calendar.date(
+                byAdding: .day,
+                value: daysAhead,
+                to: today
+            ) ?? day
+            candidate = date(
+                on: day,
+                clock: effectiveClock,
+                calendar: calendar
+            ) ?? candidate
+        } else if daysAhead == 0, clock == nil, !isDeadline {
+            candidate = now
+        }
+        return candidate
+    }
+
+    private static func validatedDate(
+        year: Int,
+        month: Int,
+        day: Int,
+        clock: Clock,
+        calendar: Calendar
+    ) -> Date? {
+        let components = DateComponents(
+            year: year,
+            month: month,
+            day: day,
+            hour: clock.hour,
+            minute: clock.minute
+        )
+        guard let date = calendar.date(from: components) else { return nil }
+        let resolved = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: date
+        )
+        guard resolved.year == year,
+              resolved.month == month,
+              resolved.day == day,
+              resolved.hour == clock.hour,
+              resolved.minute == clock.minute else {
+            return nil
+        }
+        return date
     }
 
     private static func statedPriority(in text: String) -> TaskPriority? {
@@ -744,10 +960,16 @@ final class TaskInterpreter {
             ? .destination
             : .anywhere
         let isFixed = explicit.isFixed ?? details.isFixed
+        let hasLocalDateReference =
+            TaskTextConstraints.hasDeterministicCalendarReference(
+                in: description
+            )
         let modelStart = TaskTextConstraints.mentionsTiming(in: description)
+            && !hasLocalDateReference
             ? parseISO8601(details.earliestStartISO8601)
             : nil
         let modelDeadline = TaskTextConstraints.mentionsDeadline(in: description)
+            && !hasLocalDateReference
             ? parseISO8601(details.deadlineISO8601)
             : nil
         let startDate = explicit.startDate ?? modelStart
