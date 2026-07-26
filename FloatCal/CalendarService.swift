@@ -139,8 +139,9 @@ nonisolated struct FloatCalTask: Identifiable, Hashable {
     }
 }
 
-nonisolated struct RescheduleResult {
+nonisolated struct ReflowResult {
     let updatedTasks: [FloatCalTask]
+    let originalTasks: [FloatCalTask]
     let issues: [ReflowIssue]
     let skippedConflicts: Bool
 }
@@ -150,6 +151,68 @@ nonisolated struct ReflowIssue: Identifiable {
     let reason: String
 
     var id: String { task.id }
+}
+
+nonisolated struct CalendarBusyInterval: Equatable {
+    let start: Date
+    let end: Date
+
+    func overlaps(start otherStart: Date, end otherEnd: Date) -> Bool {
+        start < otherEnd && otherStart < end
+    }
+}
+
+nonisolated struct ReflowSelection {
+    static func candidateIDs(
+        tasks: [FloatCalTask],
+        now: Date,
+        externalBusyIntervals: [CalendarBusyInterval]
+    ) -> Set<String> {
+        var candidates = Set(
+            tasks
+                .filter {
+                    $0.startDate < now
+                        && $0.isMovable
+                        && !$0.needsDetailsReview
+                }
+                .map(\.id)
+        )
+        var occupied = externalBusyIntervals
+
+        occupied.append(
+            contentsOf: tasks
+                .filter { !$0.isMovable || $0.needsDetailsReview }
+                .map { CalendarBusyInterval(start: $0.startDate, end: $0.endDate) }
+        )
+
+        let futureTasks = tasks
+            .filter {
+                $0.startDate >= now
+                    && $0.isMovable
+                    && !$0.needsDetailsReview
+            }
+            .sorted(by: FloatCalTask.isOrderedBefore)
+
+        for task in futureTasks {
+            if occupied.contains(where: {
+                $0.overlaps(start: task.startDate, end: task.endDate)
+            }) {
+                candidates.insert(task.id)
+            } else {
+                occupied.append(
+                    CalendarBusyInterval(start: task.startDate, end: task.endDate)
+                )
+            }
+        }
+
+        return candidates
+    }
+}
+
+nonisolated struct ReflowDeadline {
+    static func effective(_ deadline: Date?, now: Date) -> Date? {
+        deadline.flatMap { $0 > now ? $0 : nil }
+    }
 }
 
 private struct PlannedTaskUpdate {
@@ -299,7 +362,8 @@ final class CalendarService {
         isMovable: Bool,
         requiresBusinessHours: Bool,
         createAsOverdue: Bool = false,
-        allowFixedConflict: Bool = false
+        allowFixedConflict: Bool = false,
+        saveAtRequestedTime: Bool = false
     ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
         let calendar = try floatCalCalendar()
@@ -307,7 +371,7 @@ final class CalendarService {
         let taskDuration = TimeInterval(durationMinutes * 60)
         let placement: PlacementResult
 
-        if isMovable, createAsOverdue {
+        if saveAtRequestedTime || (isMovable && createAsOverdue) {
             placement = PlacementResult(
                 newStartDate: startDate,
                 travelTimeMinutes: 0,
@@ -341,7 +405,7 @@ final class CalendarService {
         let endDate = placement.newStartDate
             .addingTimeInterval(travelDuration + taskDuration)
 
-        if let deadline, endDate > deadline {
+        if !saveAtRequestedTime, let deadline, endDate > deadline {
             throw CalendarServiceError.noRoomBeforeDeadline
         }
 
@@ -384,7 +448,8 @@ final class CalendarService {
         travelMode: TravelMode?,
         isMovable: Bool,
         requiresBusinessHours: Bool,
-        allowFixedConflict: Bool = false
+        allowFixedConflict: Bool = false,
+        saveAtRequestedTime: Bool = false
     ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
         let event = try floatCalEvent(id: id)
@@ -394,7 +459,13 @@ final class CalendarService {
         let taskDuration = TimeInterval(durationMinutes * 60)
         let placement: PlacementResult
 
-        if isMovable {
+        if saveAtRequestedTime {
+            placement = PlacementResult(
+                newStartDate: startDate,
+                travelTimeMinutes: 0,
+                skippedConflict: false
+            )
+        } else if isMovable {
             placement = try await nextOpenStartDate(
                 from: startDate,
                 workDuration: taskDuration,
@@ -422,7 +493,7 @@ final class CalendarService {
         let placedEndDate = placement.newStartDate
             .addingTimeInterval(travelDuration + taskDuration)
 
-        if let deadline, placedEndDate > deadline {
+        if !saveAtRequestedTime, let deadline, placedEndDate > deadline {
             throw CalendarServiceError.noRoomBeforeDeadline
         }
 
@@ -461,6 +532,40 @@ final class CalendarService {
             .filter { isFloatCalEvent($0) }
             .sorted { $0.startDate < $1.startDate }
             .map(task(from:))
+    }
+
+    func conflictingTaskIDs(for tasks: [FloatCalTask]) -> Set<String> {
+        guard !tasks.isEmpty else { return [] }
+
+        let externalIntervals = externalBusyIntervals(for: tasks)
+        var conflictingIDs: Set<String> = []
+
+        for task in tasks where externalIntervals.contains(where: {
+            $0.overlaps(start: task.startDate, end: task.endDate)
+        }) {
+            conflictingIDs.insert(task.id)
+        }
+
+        for leftIndex in tasks.indices {
+            for rightIndex in tasks.indices where rightIndex > leftIndex {
+                let left = tasks[leftIndex]
+                let right = tasks[rightIndex]
+                if left.startDate < right.endDate && right.startDate < left.endDate {
+                    conflictingIDs.insert(left.id)
+                    conflictingIDs.insert(right.id)
+                }
+            }
+        }
+
+        return conflictingIDs
+    }
+
+    func reflowCandidateIDs(for tasks: [FloatCalTask], now: Date = Date()) -> Set<String> {
+        ReflowSelection.candidateIDs(
+            tasks: tasks,
+            now: now,
+            externalBusyIntervals: externalBusyIntervals(for: tasks)
+        )
     }
 
     private func eventsAcrossPracticalCalendarHistory(
@@ -534,15 +639,13 @@ final class CalendarService {
         return task(from: event)
     }
 
-    func rescheduleOverdueTasks() async throws -> RescheduleResult {
+    func reflowTasks() async throws -> ReflowResult {
         TravelTimeService.shared.beginSchedulingAttempt()
         let now = Date()
-        let overdueTasks = try tasks()
-            .filter {
-                $0.startDate < now
-                    && $0.isMovable
-                    && !$0.needsDetailsReview
-            }
+        let allTasks = try tasks()
+        let candidateIDs = reflowCandidateIDs(for: allTasks, now: now)
+        let tasksToReflow = allTasks
+            .filter { candidateIDs.contains($0.id) }
             .sorted(by: FloatCalTask.isOrderedBefore)
 
         var plannedUpdates: [PlannedTaskUpdate] = []
@@ -551,25 +654,27 @@ final class CalendarService {
         var skippedConflicts = false
         var releasedTaskIDs: Set<String> = []
 
-        for task in overdueTasks {
+        for task in tasksToReflow {
             let event = try floatCalEvent(id: task.id)
             let duration = storedDuration(for: event)
+            let searchStart = max(nextCandidateDate, task.startDate < now ? now : task.startDate)
+            let effectiveDeadline = ReflowDeadline.effective(task.deadline, now: now)
             do {
                 let placement = try await nextOpenStartDate(
-                    from: nextCandidateDate,
+                    from: searchStart,
                     workDuration: duration,
                     category: task.category,
                     destination: task.location,
                     travelMode: task.travelMode,
                     requiresBusinessHours: task.requiresBusinessHours,
                     preferredTimeOfDay: task.preferredTimeOfDay,
-                    deadline: task.deadline,
+                    deadline: effectiveDeadline,
                     excludingEventIDs: releasedTaskIDs.union([task.id])
                 )
                 let endDate = placement.newStartDate.addingTimeInterval(
                     TimeInterval(placement.travelTimeMinutes * 60) + duration
                 )
-                if let deadline = task.deadline, endDate > deadline {
+                if let effectiveDeadline, endDate > effectiveDeadline {
                     throw CalendarServiceError.noRoomBeforeDeadline
                 }
 
@@ -633,11 +738,77 @@ final class CalendarService {
             throw error
         }
 
-        return RescheduleResult(
+        return ReflowResult(
             updatedTasks: updatedTasks,
+            originalTasks: plannedUpdates.map(\.originalTask),
             issues: issues,
             skippedConflicts: skippedConflicts
         )
+    }
+
+    func undoReflow(_ originalTasks: [FloatCalTask]) throws -> [FloatCalTask] {
+        var restoredTasks: [FloatCalTask] = []
+
+        do {
+            for task in originalTasks {
+                let event = try floatCalEvent(id: task.id)
+                event.startDate = task.startDate
+                event.endDate = task.endDate
+                event.location = task.location
+                event.alarms = []
+                event.notes = floatCalNotes(
+                    taskDescription: task.taskDescription,
+                    durationMinutes: task.durationMinutes,
+                    category: task.category,
+                    travelTimeMinutes: task.travelTimeMinutes,
+                    deadline: task.deadline,
+                    priority: task.priority,
+                    preferredTimeOfDay: task.preferredTimeOfDay,
+                    travelMode: task.travelMode,
+                    isMovable: task.isMovable,
+                    reflowCount: task.reflowCount,
+                    manualOrder: task.manualOrder,
+                    requiresBusinessHours: task.requiresBusinessHours
+                )
+                try store.save(event, span: .thisEvent, commit: false)
+                restoredTasks.append(self.task(from: event))
+            }
+
+            if !originalTasks.isEmpty {
+                try store.commit()
+            }
+        } catch {
+            store.reset()
+            throw error
+        }
+
+        return restoredTasks
+    }
+
+    private func externalBusyIntervals(for tasks: [FloatCalTask]) -> [CalendarBusyInterval] {
+        guard let earliestStart = tasks.map(\.startDate).min(),
+              let latestEnd = tasks.map(\.endDate).max() else {
+            return []
+        }
+
+        let taskIDs = Set(tasks.map(\.id))
+        let predicate = store.predicateForEvents(
+            withStart: earliestStart,
+            end: latestEnd,
+            calendars: store.calendars(for: .event)
+        )
+
+        return store.events(matching: predicate)
+            .filter {
+                $0.availability != .free
+                    && !($0.eventIdentifier.map(taskIDs.contains) ?? false)
+            }
+            .compactMap { event in
+                guard let start = event.startDate, let end = event.endDate else {
+                    return nil
+                }
+                return CalendarBusyInterval(start: start, end: end)
+            }
     }
 
     func setManualOrder(taskIDs: [String]) throws {

@@ -12,6 +12,7 @@ import UIKit
 private enum TaskSaveAlert {
     case overdue
     case fixedConflict
+    case placementFailure(String)
 }
 
 struct ContentView: View {
@@ -29,10 +30,12 @@ struct ContentView: View {
     @State private var hasCalendarAccess = CalendarService.shared.hasCalendarAccess
     @State private var calendarAccessIsDenied = CalendarService.shared.calendarAccessIsDenied
     @State private var isCreatingTask = false
-    @State private var isRescheduling = false
+    @State private var isReflowing = false
     @State private var isShowingNewTaskSheet = false
     @State private var editingTask: FloatCalTask?
     @State private var tasks: [FloatCalTask] = []
+    @State private var conflictingTaskIDs: Set<String> = []
+    @State private var reflowCandidateIDs: Set<String> = []
     @State private var newTaskTitle = ""
     @State private var newTaskDescription = ""
     @State private var newTaskStartDate = Self.defaultTaskStartDate()
@@ -72,6 +75,7 @@ struct ContentView: View {
     @State private var hasConfirmedPastStart = false
     @State private var activeReflowIssue: ReflowIssue?
     @State private var queuedReflowIssues: [ReflowIssue] = []
+    @State private var lastReflowSnapshot: [FloatCalTask] = []
 
     var body: some View {
         NavigationStack {
@@ -100,10 +104,10 @@ struct ContentView: View {
 
                 if hasCalendarAccess {
                     PButton(
-                        isProcessing: isRescheduling,
-                        overdueTaskCount: overdueTaskCount
+                        isProcessing: isReflowing,
+                        taskCount: reflowCandidateIDs.count
                     ) {
-                        rescheduleOverdueTasks()
+                        reflowTasks()
                     }
                     .padding(.bottom, 16)
                 }
@@ -112,11 +116,15 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        undoCompleteTask()
+                        undoLastAction()
                     } label: {
                         Label("Undo", systemImage: "arrow.uturn.backward")
                     }
-                    .disabled(completedTasks.isEmpty || !hasCalendarAccess || isAdjustingPriority)
+                    .disabled(
+                        (lastReflowSnapshot.isEmpty && completedTasks.isEmpty)
+                            || !hasCalendarAccess
+                            || isAdjustingPriority
+                    )
                 }
 
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -220,7 +228,7 @@ struct ContentView: View {
                     activeReflowIssue = nil
                     beginEditing(issue.task)
                 }
-                Button("Skip for Now", role: .cancel) {
+                Button("Keep It Here", role: .cancel) {
                     activeReflowIssue = nil
                     Task {
                         await Task.yield()
@@ -228,7 +236,7 @@ struct ContentView: View {
                     }
                 }
             } message: { issue in
-                Text("“\(issue.task.title)” stayed overdue. \(issue.reason)")
+                Text("“\(issue.task.title)” stayed where it was scheduled. \(issue.reason)")
             }
         }
     }
@@ -523,9 +531,17 @@ struct ContentView: View {
                         taskSaveAlert = nil
                     }
                 case .fixedConflict:
-                    Button("Override Conflict") {
+                    Button("Save Anyway") {
                         taskSaveAlert = nil
                         saveTask(allowFixedConflict: true)
+                    }
+                    Button("Edit Task", role: .cancel) {
+                        taskSaveAlert = nil
+                    }
+                case .placementFailure:
+                    Button("Save Anyway") {
+                        taskSaveAlert = nil
+                        saveTask(saveAtRequestedTime: true)
                     }
                     Button("Edit Task", role: .cancel) {
                         taskSaveAlert = nil
@@ -714,6 +730,12 @@ struct ContentView: View {
                     .accessibilityLabel("Planned")
             }
 
+            if conflictingTaskIDs.contains(task.id) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Conflicts with another calendar event")
+            }
+
             if task.reflowCount > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "arrow.triangle.2.circlepath")
@@ -738,16 +760,14 @@ struct ContentView: View {
             && !speechInput.isRecording
     }
 
-    private var overdueTaskCount: Int {
-        tasks.filter { $0.startDate < Date() && $0.isMovable }.count
-    }
-
     private var taskSaveAlertTitle: String {
         switch taskSaveAlert {
         case .overdue:
             return "This Task Is Already Overdue"
         case .fixedConflict:
             return "This Fixed Time Conflicts"
+        case .placementFailure:
+            return "This Task Can’t Be Placed Safely"
         case nil:
             return ""
         }
@@ -759,6 +779,8 @@ struct ContentView: View {
             return "The earliest start has already passed. Create it on the calendar as overdue so you can Reflow it, or edit the timing first."
         case .fixedConflict:
             return "This fixed task overlaps another calendar event or protected work/sleep time, including any required travel. Override it only if this commitment takes precedence."
+        case let .placementFailure(reason):
+            return "\(reason) Save it at the requested time anyway, or edit its details first. Reflow can reconcile it later."
         case nil:
             return ""
         }
@@ -1144,7 +1166,10 @@ struct ContentView: View {
         return true
     }
 
-    private func saveTask(allowFixedConflict: Bool = false) {
+    private func saveTask(
+        allowFixedConflict: Bool = false,
+        saveAtRequestedTime: Bool = false
+    ) {
         if shouldAutomaticallyAnalyzeBeforeCreating {
             interpretTaskDescription(automaticallyCreate: true)
             return
@@ -1197,7 +1222,8 @@ struct ContentView: View {
                         travelMode: newTaskTravelMode,
                         isMovable: newTaskIsMovable,
                         requiresBusinessHours: newTaskRequiresBusinessHours,
-                        allowFixedConflict: allowFixedConflict
+                        allowFixedConflict: allowFixedConflict,
+                        saveAtRequestedTime: saveAtRequestedTime
                     )
                 } else {
                     savedTask = try await calendarService.addTask(
@@ -1214,12 +1240,14 @@ struct ContentView: View {
                         isMovable: newTaskIsMovable,
                         requiresBusinessHours: newTaskRequiresBusinessHours,
                         createAsOverdue: hasConfirmedPastStart,
-                        allowFixedConflict: allowFixedConflict
+                        allowFixedConflict: allowFixedConflict,
+                        saveAtRequestedTime: saveAtRequestedTime
                     )
                 }
 
                 refreshTasks()
                 upsertTask(savedTask)
+                lastReflowSnapshot = []
                 speechInput.stop()
                 isShowingNewTaskSheet = false
                 self.editingTask = nil
@@ -1228,6 +1256,16 @@ struct ContentView: View {
             } catch CalendarServiceError.fixedTimeConflict {
                 taskSaveAlert = .fixedConflict
                 statusText = "Confirm whether this fixed commitment should override the conflict."
+            } catch let error as CalendarServiceError {
+                switch error {
+                case .noWritableCalendarSource, .taskNotFound:
+                    statusText = "Could not save task: \(error.localizedDescription)"
+                default:
+                    taskSaveAlert = .placementFailure(
+                        error.localizedDescription
+                    )
+                    statusText = "Choose whether to edit the task or save it for later reconciliation."
+                }
             } catch {
                 statusText = "Could not save task: \(error.localizedDescription)"
             }
@@ -1251,6 +1289,8 @@ struct ContentView: View {
     private func refreshTasks() {
         do {
             tasks = try calendarService.tasks()
+            conflictingTaskIDs = calendarService.conflictingTaskIDs(for: tasks)
+            reflowCandidateIDs = calendarService.reflowCandidateIDs(for: tasks)
             statusText = nil
             promptForImportedTaskDetailsIfNeeded()
         } catch {
@@ -1292,6 +1332,7 @@ struct ContentView: View {
                 throw error
             }
 
+            lastReflowSnapshot = []
             refreshTasks()
             statusText = "Completed \(task.title)"
         } catch {
@@ -1369,31 +1410,34 @@ struct ContentView: View {
         }
     }
 
-    private func rescheduleOverdueTasks() {
-        guard !isRescheduling else { return }
+    private func reflowTasks() {
+        guard !isReflowing else { return }
 
-        isRescheduling = true
-        statusText = "Finding room for overdue tasks..."
+        isReflowing = true
+        statusText = "Finding room for tasks that need Reflow..."
 
         Task {
             await Task.yield()
 
             do {
-                let result = try await calendarService.rescheduleOverdueTasks()
+                let result = try await calendarService.reflowTasks()
                 refreshTasks()
+                if !result.originalTasks.isEmpty {
+                    lastReflowSnapshot = result.originalTasks
+                }
 
                 if result.updatedTasks.isEmpty {
                     if result.issues.isEmpty {
-                        statusText = "You’re caught up — there are no overdue tasks."
+                        statusText = "Everything is clear — no tasks need Reflow."
                     } else {
-                        statusText = "\(result.issues.count) overdue task(s) need your attention."
+                        statusText = "\(result.issues.count) task(s) still need your attention."
                     }
                 } else if !result.issues.isEmpty {
                     statusText = "Reflowed \(result.updatedTasks.count) task(s); \(result.issues.count) still need your attention."
                 } else if result.skippedConflicts {
-                    statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
+                    statusText = "Reflowed \(result.updatedTasks.count) task(s) around your calendar."
                 } else {
-                    statusText = "Reflowed \(result.updatedTasks.count) overdue task(s)."
+                    statusText = "Reflowed \(result.updatedTasks.count) task(s)."
                 }
 
                 queuedReflowIssues = result.issues
@@ -1403,7 +1447,7 @@ struct ContentView: View {
             }
 
             try? await Task.sleep(for: .milliseconds(450))
-            isRescheduling = false
+            isReflowing = false
         }
     }
 
@@ -1415,6 +1459,21 @@ struct ContentView: View {
         }
 
         activeReflowIssue = queuedReflowIssues.removeFirst()
+    }
+
+    private func undoLastAction() {
+        if !lastReflowSnapshot.isEmpty {
+            do {
+                _ = try calendarService.undoReflow(lastReflowSnapshot)
+                lastReflowSnapshot = []
+                refreshTasks()
+                statusText = "Undid the last Reflow."
+            } catch {
+                statusText = "Could not undo Reflow: \(error.localizedDescription)"
+            }
+        } else {
+            undoCompleteTask()
+        }
     }
 
     private static func defaultTaskStartDate() -> Date {
@@ -1879,7 +1938,7 @@ private struct TaskClarificationView: View {
 
 private struct PButton: View {
     let isProcessing: Bool
-    let overdueTaskCount: Int
+    let taskCount: Int
     let action: () -> Void
 
     private let buttonColor = Color(uiColor: .systemBlue)
@@ -1947,10 +2006,10 @@ private struct PButton: View {
             )
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Reflow overdue tasks")
-            .accessibilityValue("\(overdueTaskCount) overdue")
+            .accessibilityValue("\(taskCount) tasks need Reflow")
             .accessibilityHint("Press and hold to confirm. Release early to cancel.")
             .accessibilityAddTraits(.isButton)
-            .allowsHitTesting(!isProcessing && overdueTaskCount > 0)
+            .allowsHitTesting(!isProcessing && taskCount > 0)
             .onChange(of: isProcessing) { wasProcessing, isNowProcessing in
                 guard wasProcessing, !isNowProcessing else { return }
 
@@ -1968,7 +2027,7 @@ private struct PButton: View {
             Text(
                 isProcessing
                     ? "Reflowing..."
-                    : (overdueTaskCount == 0 ? "All caught up" : "Hold to reflow")
+                    : (taskCount == 0 ? "All caught up" : "Hold to reflow")
             )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -1976,7 +2035,7 @@ private struct PButton: View {
     }
 
     private func handlePressing(_ isPressing: Bool) {
-        guard !isProcessing, overdueTaskCount > 0 else { return }
+        guard !isProcessing, taskCount > 0 else { return }
 
         if isPressing {
             let now = Date()
@@ -1996,7 +2055,7 @@ private struct PButton: View {
     }
 
     private func confirm() {
-        guard !isProcessing, overdueTaskCount > 0 else { return }
+        guard !isProcessing, taskCount > 0 else { return }
 
         let now = Date()
         orbitBaseAngle = normalizedAngle(heldAngle)

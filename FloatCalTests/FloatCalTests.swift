@@ -78,6 +78,108 @@ struct FloatCalTests {
         #expect(ordered.map(\.id) == ["deadline", "none"])
     }
 
+    @Test func reflowSelectsOverdueTasksEvenWhenTheirDeadlineExpired() {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let overdue = task(
+            id: "overdue",
+            priority: .high,
+            startDate: Date(timeIntervalSince1970: 10_000),
+            deadline: Date(timeIntervalSince1970: 15_000)
+        )
+
+        let selected = ReflowSelection.candidateIDs(
+            tasks: [overdue],
+            now: now,
+            externalBusyIntervals: []
+        )
+
+        #expect(selected == ["overdue"])
+        #expect(ReflowDeadline.effective(overdue.deadline, now: now) == nil)
+    }
+
+    @Test func reflowMovesLowerPrioritySideOfFutureOverlap() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let start = Date(timeIntervalSince1970: 20_000)
+        let high = task(id: "high", priority: .high, startDate: start)
+        let low = task(
+            id: "low",
+            priority: .low,
+            startDate: start.addingTimeInterval(900)
+        )
+
+        let selected = ReflowSelection.candidateIDs(
+            tasks: [low, high],
+            now: now,
+            externalBusyIntervals: []
+        )
+
+        #expect(selected == ["low"])
+    }
+
+    @Test func reflowMovesMovableTaskAroundFixedCommitment() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let start = Date(timeIntervalSince1970: 20_000)
+        let fixed = task(
+            id: "fixed",
+            priority: .medium,
+            startDate: start,
+            isMovable: false
+        )
+        let movable = task(
+            id: "movable",
+            priority: .high,
+            startDate: start.addingTimeInterval(600)
+        )
+
+        let selected = ReflowSelection.candidateIDs(
+            tasks: [movable, fixed],
+            now: now,
+            externalBusyIntervals: []
+        )
+
+        #expect(selected == ["movable"])
+    }
+
+    @Test func reflowSelectsTaskThatOverlapsExternalCalendarEvent() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let start = Date(timeIntervalSince1970: 20_000)
+        let task = task(id: "task", priority: .medium, startDate: start)
+        let busy = CalendarBusyInterval(
+            start: start.addingTimeInterval(300),
+            end: start.addingTimeInterval(600)
+        )
+
+        let selected = ReflowSelection.candidateIDs(
+            tasks: [task],
+            now: now,
+            externalBusyIntervals: [busy]
+        )
+
+        #expect(selected == ["task"])
+    }
+
+    @Test func touchingTaskBoundariesDoNotCountAsOverlap() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let first = task(
+            id: "first",
+            priority: .high,
+            startDate: Date(timeIntervalSince1970: 20_000)
+        )
+        let second = task(
+            id: "second",
+            priority: .low,
+            startDate: first.endDate
+        )
+
+        let selected = ReflowSelection.candidateIDs(
+            tasks: [first, second],
+            now: now,
+            externalBusyIntervals: []
+        )
+
+        #expect(selected.isEmpty)
+    }
+
     @Test func lifestyleInfersWorkAndHomeOrigins() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -704,7 +806,8 @@ struct FloatCalTests {
         priority: TaskPriority,
         startDate: Date = Date(timeIntervalSince1970: 10_000),
         deadline: Date? = nil,
-        manualOrder: Int? = nil
+        manualOrder: Int? = nil,
+        isMovable: Bool = true
     ) -> FloatCalTask {
         return FloatCalTask(
             id: id,
@@ -720,7 +823,7 @@ struct FloatCalTests {
             preferredTimeOfDay: "",
             location: "",
             travelMode: nil,
-            isMovable: true,
+            isMovable: isMovable,
             requiresBusinessHours: false,
             reflowCount: 0,
             manualOrder: manualOrder,
