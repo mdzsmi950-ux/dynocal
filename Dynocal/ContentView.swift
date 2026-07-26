@@ -48,6 +48,7 @@ struct ContentView: View {
     @State private var taskInterpretationMessage: String?
     @State private var interpretedTimePreference = ""
     @State private var interpretedAsFixed = false
+    @State private var isManualMode = false
     @State private var isShowingTaskDetails = false
     @State private var isShowingSettings = false
     @State private var isShowingClarification = false
@@ -345,31 +346,45 @@ struct ContentView: View {
 
                         Spacer()
 
-                        switch taskInterpreter.availability {
-                        case .available:
-                            Button {
-                                interpretTaskDescription()
-                            } label: {
-                                Label(
-                                    isInterpretingTask
-                                        ? "Analyzing..."
-                                        : "Analyze with Apple Intelligence",
-                                    systemImage: "apple.intelligence"
+                        if isManualMode {
+                            Label("Manual Entry", systemImage: "slider.horizontal.3")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            switch taskInterpreter.availability {
+                            case .available:
+                                Button {
+                                    interpretTaskDescription()
+                                } label: {
+                                    Label(
+                                        isInterpretingTask
+                                            ? "Analyzing..."
+                                            : "Analyze with Apple Intelligence",
+                                        systemImage: "apple.intelligence"
+                                    )
+                                }
+                                .disabled(
+                                    newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        || isInterpretingTask
+                                        || speechInput.isRecording
                                 )
+                                .buttonStyle(.borderless)
+
+                                Button {
+                                    enterManualMode()
+                                } label: {
+                                    Image(systemName: "slider.horizontal.3")
+                                }
+                                .accessibilityLabel("Enter manually")
+                                .buttonStyle(.borderless)
+                            case .unavailable:
+                                Button {
+                                    enterManualMode()
+                                } label: {
+                                    Label("Enter Manually", systemImage: "slider.horizontal.3")
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            .disabled(
-                                newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    || isInterpretingTask
-                                    || speechInput.isRecording
-                            )
-                            .buttonStyle(.borderless)
-                        case .unavailable:
-                            Button {
-                                enterManualMode()
-                            } label: {
-                                Label("Enter Manually", systemImage: "slider.horizontal.3")
-                            }
-                            .buttonStyle(.borderless)
                         }
                     }
 
@@ -383,58 +398,22 @@ struct ContentView: View {
                     }
                 }
 
-                Section {
-                    DisclosureGroup("Task details", isExpanded: $isShowingTaskDetails) {
-                        TextField("Task Name", text: $newTaskTitle)
+                if isManualMode {
+                    Section("Task Details") {
+                        taskDetailControls
+                    }
 
-                        DatePicker(
-                            newTaskIsMovable ? "Earliest Start" : "Task Starts",
-                            selection: confirmedStartBinding,
-                            displayedComponents: [.date, .hourAndMinute]
-                        )
-
-                        Stepper(
-                            "Duration: \(newTaskDurationMinutes) min",
-                            value: confirmedDurationBinding,
-                            in: 5...480,
-                            step: 5
-                        )
-
-                        Picker("Category", selection: $newTaskCategory) {
-                            ForEach(TaskCategory.allCases) { category in
-                                Text(category.rawValue).tag(category)
-                            }
-                        }
-
-                        TextField("Location", text: confirmedLocationBinding)
-
-                        if newTaskPlaceRequirement == .destination {
-                            Toggle(
-                                "Place has opening hours",
-                                isOn: $newTaskRequiresBusinessHours
-                            )
-                        }
-
-                        Toggle("Deadline", isOn: $newTaskHasDeadline)
-
-                        if newTaskHasDeadline {
-                            DatePicker(
-                                "Due",
-                                selection: $newTaskDeadline,
-                                displayedComponents: [.date, .hourAndMinute]
-                            )
-                        }
-
-                        Picker("Priority", selection: $newTaskPriority) {
-                            ForEach(TaskPriority.allCases) { priority in
-                                Text(priority.rawValue).tag(priority)
-                            }
-                        }
-
-                        Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
-
-                        if !interpretedTimePreference.isEmpty {
-                            LabeledContent("Preferred Time", value: interpretedTimePreference)
+                    Section {
+                        manualCompletenessChecklist
+                    } header: {
+                        Text(manualIssues.isEmpty ? "Complete" : "Still Needed")
+                    } footer: {
+                        Text("Dynocal uses the same scheduling rules with or without Apple Intelligence.")
+                    }
+                } else {
+                    Section {
+                        DisclosureGroup("Task details", isExpanded: $isShowingTaskDetails) {
+                            taskDetailControls
                         }
                     }
                 }
@@ -477,6 +456,114 @@ struct ContentView: View {
                     isShowingTaskDetails = true
                 }
                 .environmentObject(preferences)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var taskDetailControls: some View {
+        TextField("Task Name", text: $newTaskTitle)
+
+        Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
+
+        DatePicker(
+            newTaskIsMovable ? "Earliest Start" : "Task Starts",
+            selection: confirmedStartBinding,
+            displayedComponents: [.date, .hourAndMinute]
+        )
+
+        Stepper(
+            "Task Duration: \(newTaskDurationMinutes) min",
+            value: confirmedDurationBinding,
+            in: 5...480,
+            step: 5
+        )
+
+        if isManualMode,
+           ![TaskFactSource.explicit, .userConfirmed].contains(newTaskDurationSource) {
+            Button("Confirm \(newTaskDurationMinutes) Minutes") {
+                newTaskDurationSource = .userConfirmed
+            }
+        }
+
+        if isManualMode,
+           !newTaskIsMovable,
+           ![TaskFactSource.explicit, .userConfirmed].contains(newTaskStartSource) {
+            Button("Confirm This Start Time") {
+                newTaskStartSource = .userConfirmed
+            }
+        }
+
+        Picker("Priority", selection: $newTaskPriority) {
+            ForEach(TaskPriority.allCases) { priority in
+                Text(priority.rawValue).tag(priority)
+            }
+        }
+
+        Picker("Preferred Time", selection: $interpretedTimePreference) {
+            Text("Any Time").tag("")
+            Text("Morning").tag("Morning")
+            Text("Afternoon").tag("Afternoon")
+            Text("Evening").tag("Evening")
+            Text("Night").tag("Night")
+        }
+
+        Toggle("Deadline", isOn: $newTaskHasDeadline)
+
+        if newTaskHasDeadline {
+            DatePicker(
+                "Due",
+                selection: $newTaskDeadline,
+                displayedComponents: [.date, .hourAndMinute]
+            )
+        }
+
+        Picker("Category", selection: $newTaskCategory) {
+            ForEach(TaskCategory.allCases) { category in
+                Text(category.rawValue).tag(category)
+            }
+        }
+
+        if isManualMode {
+            Picker("Where", selection: placeRequirementBinding) {
+                Text("Anywhere").tag(TaskPlaceRequirement.anywhere)
+                Text("At a Place").tag(TaskPlaceRequirement.destination)
+            }
+        }
+
+        if !isManualMode || newTaskPlaceRequirement == .destination {
+            TextField(
+                isManualMode ? "Exact destination" : "Location",
+                text: confirmedLocationBinding
+            )
+        }
+
+        if newTaskPlaceRequirement == .destination {
+            Toggle(
+                "Place has opening hours",
+                isOn: $newTaskRequiresBusinessHours
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var manualCompletenessChecklist: some View {
+        if manualIssues.isEmpty {
+            Label("Ready to schedule", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else {
+            ForEach(manualIssues) { issue in
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(issue.title)
+                        Text(issue.explanation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "circle")
+                        .foregroundStyle(.orange)
+                }
             }
         }
     }
@@ -526,7 +613,11 @@ struct ContentView: View {
     }
 
     private var canCreateTask: Bool {
-        !newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        (
+            !newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (isManualMode
+                    && !newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        )
             && hasCalendarAccess
             && !isCreatingTask
             && !isInterpretingTask
@@ -558,13 +649,16 @@ struct ContentView: View {
         taskInterpretationMessage = nil
         interpretedTimePreference = ""
         interpretedAsFixed = false
+        isManualMode = false
         clarificationIssues = []
         isShowingClarification = false
         isShowingTaskDetails = false
         dictationPrefix = ""
 
         if case .unavailable(let reason) = taskInterpreter.availability {
-            taskInterpretationMessage = "\(reason) Enter the task details manually."
+            isManualMode = true
+            isShowingTaskDetails = true
+            taskInterpretationMessage = "\(reason) Manual entry is ready."
         }
 
         isShowingNewTaskSheet = true
@@ -592,6 +686,7 @@ struct ContentView: View {
         taskInterpretationMessage = nil
         interpretedTimePreference = task.preferredTimeOfDay
         interpretedAsFixed = false
+        isManualMode = true
         clarificationIssues = []
         isShowingTaskDetails = true
         dictationPrefix = ""
@@ -641,11 +736,12 @@ struct ContentView: View {
         case .available:
             break
         case .unavailable(let reason):
-            taskInterpretationMessage = reason
-            isShowingTaskDetails = true
+            enterManualMode()
+            taskInterpretationMessage = "\(reason) Manual entry is ready."
             return
         }
 
+        isManualMode = false
         isInterpretingTask = true
         taskInterpretationMessage = nil
 
@@ -711,13 +807,19 @@ struct ContentView: View {
     private func enterManualMode() {
         let description = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !description.isEmpty {
             newTaskTitle = description
+                .split(whereSeparator: \.isWhitespace)
+                .prefix(5)
+                .joined(separator: " ")
         }
 
         withAnimation {
+            isManualMode = true
             isShowingTaskDetails = true
         }
+        taskInterpretationMessage = "Manual entry uses the same scheduling checks as Apple Intelligence."
     }
 
     private var clarificationOrigin: PlaceOrigin {
@@ -771,16 +873,36 @@ struct ContentView: View {
                 let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 newTaskDestinationSource = trimmed.isEmpty ? .unknown : .userConfirmed
                 newTaskPlaceRequirement = trimmed.isEmpty ? .anywhere : .destination
+                if isManualMode {
+                    newTaskDestinationQuery = trimmed
+                }
             }
         )
     }
 
-    private func refreshClarificationIssues() {
+    private var placeRequirementBinding: Binding<TaskPlaceRequirement> {
+        Binding(
+            get: { newTaskPlaceRequirement },
+            set: { requirement in
+                newTaskPlaceRequirement = requirement
+                if requirement == .anywhere {
+                    newTaskLocation = ""
+                    newTaskDestinationQuery = ""
+                    newTaskDestinationSource = .unknown
+                    newTaskRequiresBusinessHours = false
+                }
+            }
+        )
+    }
+
+    private var currentReasoningFacts: TaskReasoningFacts {
         let savedPlace = preferences.place(matching: newTaskLocation)
-        let facts = TaskReasoningFacts(
+        return TaskReasoningFacts(
             title: TaskFact(
                 newTaskTitle,
-                source: newTaskTitle.isEmpty ? .unknown : .modelInferred
+                source: newTaskTitle.isEmpty
+                    ? .unknown
+                    : (isManualMode ? .userConfirmed : .modelInferred)
             ),
             workDurationMinutes: TaskFact(
                 newTaskDurationMinutes,
@@ -794,17 +916,27 @@ struct ContentView: View {
                 newTaskHasDeadline ? Optional(newTaskDeadline) : nil,
                 source: newTaskHasDeadline ? .explicit : .unknown
             ),
-            priority: TaskFact(newTaskPriority, source: .modelInferred),
-            canReflow: TaskFact(newTaskIsMovable, source: .explicit),
+            priority: TaskFact(
+                newTaskPriority,
+                source: isManualMode ? .userConfirmed : .modelInferred
+            ),
+            canReflow: TaskFact(
+                newTaskIsMovable,
+                source: isManualMode ? .userConfirmed : .explicit
+            ),
             placeRequirement: TaskFact(
                 newTaskPlaceRequirement,
-                source: newTaskPlaceRequirement == .destination
-                    ? .modelInferred
-                    : .defaultValue
+                source: isManualMode
+                    ? .userConfirmed
+                    : (newTaskPlaceRequirement == .destination
+                        ? .modelInferred
+                        : .defaultValue)
             ),
             destinationQuery: TaskFact(
                 newTaskDestinationQuery,
-                source: newTaskDestinationQuery.isEmpty ? .unknown : .modelInferred
+                source: newTaskDestinationQuery.isEmpty
+                    ? .unknown
+                    : (isManualMode ? .userConfirmed : .modelInferred)
             ),
             destinationAddress: TaskFact(
                 newTaskLocation,
@@ -820,16 +952,26 @@ struct ContentView: View {
             requiresBusinessHours: newTaskRequiresBusinessHours,
             hasSavedBusinessHours: !(savedPlace?.weeklyHours.isEmpty ?? true)
         )
-        clarificationIssues = TaskCompletenessEngine.issues(for: facts)
+    }
+
+    private var manualIssues: [TaskClarificationIssue] {
+        TaskCompletenessEngine.issues(for: currentReasoningFacts)
+    }
+
+    private func refreshClarificationIssues() {
+        clarificationIssues = TaskCompletenessEngine.issues(
+            for: currentReasoningFacts
+        )
     }
 
     private func saveTask() {
         let trimmedDescription = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let enteredTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedTitle = enteredTitle.isEmpty ? trimmedDescription : enteredTitle
+        let effectiveDescription = trimmedDescription.isEmpty ? trimmedTitle : trimmedDescription
 
-        guard !trimmedDescription.isEmpty else {
-            statusText = "Describe the task first"
+        guard !effectiveDescription.isEmpty else {
+            statusText = "Name or describe the task first"
             return
         }
 
@@ -851,7 +993,7 @@ struct ContentView: View {
                     savedTask = try await calendarService.updateTask(
                         id: editingTask.id,
                         title: trimmedTitle,
-                        description: trimmedDescription,
+                        description: effectiveDescription,
                         startDate: newTaskStartDate,
                         durationMinutes: newTaskDurationMinutes,
                         category: newTaskCategory,
@@ -865,7 +1007,7 @@ struct ContentView: View {
                 } else {
                     savedTask = try await calendarService.addTask(
                         title: trimmedTitle,
-                        description: trimmedDescription,
+                        description: effectiveDescription,
                         startDate: newTaskStartDate,
                         durationMinutes: newTaskDurationMinutes,
                         category: newTaskCategory,

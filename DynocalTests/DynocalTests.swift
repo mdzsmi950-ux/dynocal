@@ -240,6 +240,25 @@ struct DynocalTests {
         #expect(TaskCompletenessEngine.issues(for: facts).isEmpty)
     }
 
+    @Test func userConfirmedManualTaskUsesTheSameCompletenessRules() {
+        let facts = TaskReasoningFacts(
+            title: TaskFact("Send email", source: .userConfirmed),
+            workDurationMinutes: TaskFact(20, source: .userConfirmed),
+            earliestStart: TaskFact(nil, source: .unknown),
+            deadline: TaskFact(nil, source: .unknown),
+            priority: TaskFact(.high, source: .userConfirmed),
+            canReflow: TaskFact(true, source: .userConfirmed),
+            placeRequirement: TaskFact(.anywhere, source: .userConfirmed),
+            destinationQuery: TaskFact("", source: .unknown),
+            destinationAddress: TaskFact("", source: .unknown),
+            fixedStart: TaskFact(nil, source: .unknown),
+            requiresBusinessHours: false,
+            hasSavedBusinessHours: false
+        )
+
+        #expect(TaskCompletenessEngine.issues(for: facts).isEmpty)
+    }
+
     @Test func businessHoursContainWholeTaskNotTravel() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
