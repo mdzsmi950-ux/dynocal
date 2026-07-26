@@ -702,14 +702,10 @@ struct ContentView: View {
     }
 
     private var clarificationOrigin: PlaceOrigin {
-        let components = Calendar.current.dateComponents([.weekday, .hour, .minute], from: newTaskStartDate)
-        let weekday = components.weekday ?? 1
-        let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        let inferredOrigin = preferences.profile.expectedOrigin(at: newTaskStartDate)
 
-        if preferences.profile.workDays.contains(weekday),
-           minutes >= preferences.profile.workEndMinutes - 90,
-           !preferences.profile.workAddress.isEmpty {
-            return .work
+        if inferredOrigin == .work, !preferences.profile.workAddress.isEmpty {
+            return inferredOrigin
         }
 
         return preferences.profile.homeAddress.isEmpty ? .either : .home

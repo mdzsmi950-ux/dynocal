@@ -32,6 +32,31 @@ struct LifestyleProfile: Codable, Equatable {
     var protectSleep = true
     var usesHealthSleep = false
     var placePreferences: [PlacePreference] = []
+
+    nonisolated func expectedOrigin(
+        at date: Date,
+        calendar: Calendar = .current,
+        afterWorkDepartureWindowMinutes: Int = 90
+    ) -> PlaceOrigin {
+        let components = calendar.dateComponents([.weekday, .hour, .minute], from: date)
+        guard let weekday = components.weekday,
+              let hour = components.hour,
+              let minute = components.minute,
+              protectWorkHours,
+              workDays.contains(weekday) else {
+            return .home
+        }
+
+        let minutes = hour * 60 + minute
+        let latestWorkDeparture = min(
+            workEndMinutes + afterWorkDepartureWindowMinutes,
+            24 * 60 - 1
+        )
+
+        return (workStartMinutes...latestWorkDeparture).contains(minutes)
+            ? .work
+            : .home
+    }
 }
 
 @MainActor

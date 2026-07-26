@@ -78,6 +78,34 @@ struct DynocalTests {
         #expect(ordered.map(\.id) == ["deadline", "none"])
     }
 
+    @Test func lifestyleInfersWorkAndHomeOrigins() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        var profile = LifestyleProfile()
+        profile.workDays = [2, 3, 4, 5, 6]
+        profile.workStartMinutes = 9 * 60
+        profile.workEndMinutes = 17 * 60
+
+        let wednesdayAtTwo = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 29, hour: 14)
+        )!
+        let wednesdayAfterWork = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 29, hour: 17, minute: 30)
+        )!
+        let wednesdayAtNight = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 29, hour: 21)
+        )!
+        let saturdayAfternoon = calendar.date(
+            from: DateComponents(year: 2026, month: 8, day: 1, hour: 14)
+        )!
+
+        #expect(profile.expectedOrigin(at: wednesdayAtTwo, calendar: calendar) == .work)
+        #expect(profile.expectedOrigin(at: wednesdayAfterWork, calendar: calendar) == .work)
+        #expect(profile.expectedOrigin(at: wednesdayAtNight, calendar: calendar) == .home)
+        #expect(profile.expectedOrigin(at: saturdayAfternoon, calendar: calendar) == .home)
+    }
+
     private func task(
         id: String,
         priority: TaskPriority,
