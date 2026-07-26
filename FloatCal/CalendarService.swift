@@ -8,7 +8,7 @@
 import EventKit
 import Foundation
 
-enum TaskCategory: String, CaseIterable, Identifiable {
+nonisolated enum TaskCategory: String, CaseIterable, Identifiable {
     case none = "None"
     case errand = "Errand"
     case work = "Work"
@@ -18,7 +18,7 @@ enum TaskCategory: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-enum TaskPriority: String, CaseIterable, Identifiable {
+nonisolated enum TaskPriority: String, CaseIterable, Identifiable {
     case none = "None"
     case low = "Low"
     case medium = "Medium"
@@ -36,7 +36,7 @@ enum TaskPriority: String, CaseIterable, Identifiable {
     }
 }
 
-enum TaskSortMode: String, CaseIterable, Identifiable {
+nonisolated enum TaskSortMode: String, CaseIterable, Identifiable {
     case time = "Time"
     case deadline = "Deadline"
     case priority = "Priority"
@@ -52,7 +52,7 @@ enum TaskSortMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct FloatCalTask: Identifiable, Hashable {
+nonisolated struct FloatCalTask: Identifiable, Hashable {
     let id: String
     let title: String
     let taskDescription: String
@@ -65,6 +65,7 @@ struct FloatCalTask: Identifiable, Hashable {
     let priority: TaskPriority
     let preferredTimeOfDay: String
     let location: String
+    let travelMode: TravelMode?
     let isMovable: Bool
     let requiresBusinessHours: Bool
     let reflowCount: Int
@@ -138,13 +139,13 @@ struct FloatCalTask: Identifiable, Hashable {
     }
 }
 
-struct RescheduleResult {
+nonisolated struct RescheduleResult {
     let updatedTasks: [FloatCalTask]
     let issues: [ReflowIssue]
     let skippedConflicts: Bool
 }
 
-struct ReflowIssue: Identifiable {
+nonisolated struct ReflowIssue: Identifiable {
     let task: FloatCalTask
     let reason: String
 
@@ -168,19 +169,19 @@ private struct BlockedInterval {
     let end: Date
 }
 
-struct CalendarContextEvent: Equatable {
+nonisolated struct CalendarContextEvent: Equatable {
     let start: Date
     let end: Date
     let location: String?
 }
 
-enum SchedulingOrigin: Equatable {
+nonisolated enum SchedulingOrigin: Equatable {
     case calendarEvent(String)
     case lifestyle(PlaceOrigin, String)
     case unknown
 }
 
-struct SchedulingContextResolver {
+nonisolated struct SchedulingContextResolver {
     nonisolated static let eventAnchorWindow: TimeInterval = 2 * 60 * 60
 
     nonisolated static func origin(
@@ -220,7 +221,7 @@ struct SchedulingContextResolver {
     }
 }
 
-struct TaskTimePreference {
+nonisolated struct TaskTimePreference {
     nonisolated static func matches(
         _ preference: String,
         date: Date,
@@ -242,7 +243,7 @@ struct TaskTimePreference {
     }
 }
 
-struct DeletedTask {
+nonisolated struct DeletedTask {
     let title: String
     let startDate: Date
     let endDate: Date
@@ -294,6 +295,7 @@ final class CalendarService {
         priority: TaskPriority,
         preferredTimeOfDay: String,
         location: String,
+        travelMode: TravelMode?,
         isMovable: Bool,
         requiresBusinessHours: Bool,
         createAsOverdue: Bool = false,
@@ -317,6 +319,7 @@ final class CalendarService {
                 workDuration: taskDuration,
                 category: category,
                 destination: location,
+                travelMode: travelMode,
                 requiresBusinessHours: requiresBusinessHours,
                 preferredTimeOfDay: preferredTimeOfDay,
                 deadline: deadline,
@@ -328,6 +331,7 @@ final class CalendarService {
                 workDuration: taskDuration,
                 category: category,
                 destination: location,
+                travelMode: travelMode,
                 requiresBusinessHours: requiresBusinessHours,
                 allowConflict: allowFixedConflict,
                 excludingEventIDs: []
@@ -356,6 +360,7 @@ final class CalendarService {
             deadline: deadline,
             priority: priority,
             preferredTimeOfDay: preferredTimeOfDay,
+            travelMode: travelMode,
             isMovable: isMovable,
             requiresBusinessHours: requiresBusinessHours
         )
@@ -376,6 +381,7 @@ final class CalendarService {
         priority: TaskPriority,
         preferredTimeOfDay: String,
         location: String,
+        travelMode: TravelMode?,
         isMovable: Bool,
         requiresBusinessHours: Bool,
         allowFixedConflict: Bool = false
@@ -394,6 +400,7 @@ final class CalendarService {
                 workDuration: taskDuration,
                 category: category,
                 destination: location,
+                travelMode: travelMode,
                 requiresBusinessHours: requiresBusinessHours,
                 preferredTimeOfDay: preferredTimeOfDay,
                 deadline: deadline,
@@ -405,6 +412,7 @@ final class CalendarService {
                 workDuration: taskDuration,
                 category: category,
                 destination: location,
+                travelMode: travelMode,
                 requiresBusinessHours: requiresBusinessHours,
                 allowConflict: allowFixedConflict,
                 excludingEventIDs: [id]
@@ -429,6 +437,7 @@ final class CalendarService {
             deadline: deadline,
             priority: priority,
             preferredTimeOfDay: preferredTimeOfDay,
+            travelMode: travelMode,
             isMovable: isMovable,
             reflowCount: existingTask.reflowCount,
             manualOrder: existingTask.manualOrder,
@@ -540,7 +549,7 @@ final class CalendarService {
         var issues: [ReflowIssue] = []
         var nextCandidateDate = now
         var skippedConflicts = false
-        let overdueTaskIDs = Set(overdueTasks.map(\.id))
+        var releasedTaskIDs: Set<String> = []
 
         for task in overdueTasks {
             let event = try floatCalEvent(id: task.id)
@@ -551,10 +560,11 @@ final class CalendarService {
                     workDuration: duration,
                     category: task.category,
                     destination: task.location,
+                    travelMode: task.travelMode,
                     requiresBusinessHours: task.requiresBusinessHours,
                     preferredTimeOfDay: task.preferredTimeOfDay,
                     deadline: task.deadline,
-                    excludingEventIDs: overdueTaskIDs
+                    excludingEventIDs: releasedTaskIDs.union([task.id])
                 )
                 let endDate = placement.newStartDate.addingTimeInterval(
                     TimeInterval(placement.travelTimeMinutes * 60) + duration
@@ -570,6 +580,7 @@ final class CalendarService {
                         workDuration: duration
                     )
                 )
+                releasedTaskIDs.insert(task.id)
                 nextCandidateDate = endDate
                 skippedConflicts = skippedConflicts || placement.skippedConflict
             } catch {
@@ -603,6 +614,7 @@ final class CalendarService {
                     deadline: task.deadline,
                     priority: task.priority,
                     preferredTimeOfDay: task.preferredTimeOfDay,
+                    travelMode: task.travelMode,
                     isMovable: task.isMovable,
                     reflowCount: task.reflowCount + 1,
                     manualOrder: task.manualOrder,
@@ -641,6 +653,7 @@ final class CalendarService {
                 deadline: task.deadline,
                 priority: task.priority,
                 preferredTimeOfDay: task.preferredTimeOfDay,
+                travelMode: task.travelMode,
                 isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
                 manualOrder: order,
@@ -666,6 +679,7 @@ final class CalendarService {
                 deadline: task.deadline,
                 priority: task.priority,
                 preferredTimeOfDay: task.preferredTimeOfDay,
+                travelMode: task.travelMode,
                 isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
                 manualOrder: nil,
@@ -754,6 +768,7 @@ final class CalendarService {
         workDuration: TimeInterval,
         category: TaskCategory,
         destination: String,
+        travelMode: TravelMode?,
         requiresBusinessHours: Bool,
         preferredTimeOfDay: String,
         deadline: Date?,
@@ -773,10 +788,7 @@ final class CalendarService {
         )
         let calendarEvents = store.events(matching: predicate)
             .filter { event in
-                let isExcluded = event.eventIdentifier.map(excludingEventIDs.contains) ?? false
-
-                return !isExcluded
-                    && !event.isAllDay
+                !(event.eventIdentifier.map(excludingEventIDs.contains) ?? false)
             }
         let eventIntervals = calendarEvents
             .filter { $0.availability != .free }
@@ -785,6 +797,7 @@ final class CalendarService {
                 return BlockedInterval(start: start, end: end)
             }
         let contextEvents = calendarEvents.compactMap { event -> CalendarContextEvent? in
+            guard !event.isAllDay else { return nil }
             guard let start = event.startDate, let end = event.endDate else { return nil }
             let eventLocation = event.location?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -845,7 +858,8 @@ final class CalendarService {
                 guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
                     from: origin,
                     to: destination,
-                    departureDate: candidateStartDate
+                    departureDate: candidateStartDate,
+                    travelMode: travelMode
                 ) else {
                     candidateStartDate = candidateStartDate.addingTimeInterval(30 * 60)
                     continue
@@ -930,7 +944,8 @@ final class CalendarService {
                     guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
                         from: origin,
                         to: destination,
-                        departureDate: candidateStartDate
+                        departureDate: candidateStartDate,
+                        travelMode: travelMode
                     ) else {
                         candidateStartDate = candidateStartDate.addingTimeInterval(30 * 60)
                         continue
@@ -996,6 +1011,7 @@ final class CalendarService {
         workDuration: TimeInterval,
         category: TaskCategory,
         destination: String,
+        travelMode: TravelMode?,
         requiresBusinessHours: Bool,
         allowConflict: Bool,
         excludingEventIDs: Set<String>
@@ -1005,7 +1021,7 @@ final class CalendarService {
 
         if !trimmedDestination.isEmpty {
             let contextStart = taskStartDate.addingTimeInterval(
-            -SchedulingContextResolver.eventAnchorWindow
+                -SchedulingContextResolver.eventAnchorWindow
             )
             let predicate = store.predicateForEvents(
                 withStart: contextStart,
@@ -1042,7 +1058,8 @@ final class CalendarService {
             guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
                 from: origin,
                 to: trimmedDestination,
-                departureDate: taskStartDate
+                departureDate: taskStartDate,
+                travelMode: travelMode
             ) else {
                 throw CalendarServiceError.travelRouteUnavailable
             }
@@ -1102,8 +1119,7 @@ final class CalendarService {
             calendars: store.calendars(for: .event)
         )
         return store.events(matching: predicate).contains { event in
-            guard !event.isAllDay,
-                  event.availability != .free,
+            guard event.availability != .free,
                   !(event.eventIdentifier.map(excludingEventIDs.contains) ?? false),
                   let eventStart = event.startDate,
                   let eventEnd = event.endDate else {
@@ -1202,6 +1218,7 @@ final class CalendarService {
         deadline: Date?,
         priority: TaskPriority,
         preferredTimeOfDay: String = "",
+        travelMode: TravelMode? = nil,
         isMovable: Bool = true,
         reflowCount: Int = 0,
         manualOrder: Int? = nil,
@@ -1209,13 +1226,14 @@ final class CalendarService {
     ) -> String {
         let deadlineTimestamp = deadline.map { String($0.timeIntervalSince1970) } ?? "none"
         let manualOrderValue = manualOrder.map(String.init) ?? "none"
+        let travelModeValue = travelMode?.rawValue ?? "none"
         let encodedDescription = Data(taskDescription.utf8).base64EncodedString()
 
         return """
         Created by FloatCal
 
         FLOATCAL_META_START
-        version: 6
+        version: 7
         itemType: task
         scheduleType: \(isMovable ? "movable" : "fixed")
         taskDescriptionBase64: \(encodedDescription)
@@ -1225,6 +1243,7 @@ final class CalendarService {
         deadlineTimestamp: \(deadlineTimestamp)
         priority: \(priority.rawValue)
         preferredTimeOfDay: \(preferredTimeOfDay)
+        travelMode: \(travelModeValue)
         reflowCount: \(reflowCount)
         manualOrder: \(manualOrderValue)
         requiresBusinessHours: \(requiresBusinessHours)
@@ -1251,6 +1270,8 @@ final class CalendarService {
         let priority = metadataValue("priority", in: event.notes)
             .flatMap(TaskPriority.init(rawValue:)) ?? .none
         let preferredTimeOfDay = metadataValue("preferredTimeOfDay", in: event.notes) ?? ""
+        let travelMode = metadataValue("travelMode", in: event.notes)
+            .flatMap(TravelMode.init(rawValue:))
         let isMovable = !needsDetailsReview
             && metadataValue("scheduleType", in: event.notes) != "fixed"
         let reflowCount = metadataValue("reflowCount", in: event.notes)
@@ -1278,6 +1299,7 @@ final class CalendarService {
             priority: priority,
             preferredTimeOfDay: preferredTimeOfDay,
             location: event.location ?? "",
+            travelMode: travelMode,
             isMovable: isMovable,
             requiresBusinessHours: requiresBusinessHours,
             reflowCount: reflowCount,
@@ -1329,7 +1351,7 @@ final class CalendarService {
     }
 }
 
-enum CalendarServiceError: LocalizedError {
+nonisolated enum CalendarServiceError: LocalizedError {
     case noWritableCalendarSource
     case taskNotFound
     case noRoomBeforeDeadline

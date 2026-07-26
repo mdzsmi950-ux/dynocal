@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskFactSource: String, Codable, Equatable {
+nonisolated enum TaskFactSource: String, Codable, Equatable {
     case explicit
     case userConfirmed
     case rememberedPreference
@@ -11,12 +11,12 @@ enum TaskFactSource: String, Codable, Equatable {
     case unknown
 }
 
-enum TaskFactScope: String, Codable, Equatable {
+nonisolated enum TaskFactScope: String, Codable, Equatable {
     case thisTask
     case rememberedPreference
 }
 
-struct TaskFact<Value: Equatable>: Equatable {
+nonisolated struct TaskFact<Value: Equatable>: Equatable {
     var value: Value
     var source: TaskFactSource
     var scope: TaskFactScope
@@ -35,12 +35,12 @@ struct TaskFact<Value: Equatable>: Equatable {
     }
 }
 
-enum TaskPlaceRequirement: String, Codable, Equatable {
+nonisolated enum TaskPlaceRequirement: String, Codable, Equatable {
     case anywhere
     case destination
 }
 
-enum TaskClarificationKind: String, Equatable, Identifiable {
+nonisolated enum TaskClarificationKind: String, Equatable, Identifiable {
     case title
     case duration
     case fixedStart
@@ -52,7 +52,7 @@ enum TaskClarificationKind: String, Equatable, Identifiable {
     var id: String { rawValue }
 }
 
-struct TaskClarificationIssue: Equatable, Identifiable {
+nonisolated struct TaskClarificationIssue: Equatable, Identifiable {
     let kind: TaskClarificationKind
     let title: String
     let explanation: String
@@ -60,7 +60,7 @@ struct TaskClarificationIssue: Equatable, Identifiable {
     var id: TaskClarificationKind { kind }
 }
 
-struct TaskReasoningFacts: Equatable {
+nonisolated struct TaskReasoningFacts: Equatable {
     var title: TaskFact<String>
     var workDurationMinutes: TaskFact<Int>
     var earliestStart: TaskFact<Date?>
@@ -75,7 +75,7 @@ struct TaskReasoningFacts: Equatable {
     var hasSavedBusinessHours: Bool
 }
 
-struct TaskCompletenessEngine {
+nonisolated struct TaskCompletenessEngine {
     static func issues(for facts: TaskReasoningFacts) -> [TaskClarificationIssue] {
         var issues: [TaskClarificationIssue] = []
 
@@ -156,12 +156,14 @@ struct TaskCompletenessEngine {
 
         if let earliestStart = facts.earliestStart.value,
            let deadline = facts.deadline.value,
-           deadline <= earliestStart {
+           deadline < earliestStart.addingTimeInterval(
+                TimeInterval(max(0, facts.workDurationMinutes.value) * 60)
+           ) {
             issues.append(
                 TaskClarificationIssue(
                     kind: .dateConflict,
                     title: "Check the timing",
-                    explanation: "The deadline must be later than the earliest allowed start."
+                    explanation: "The window must be long enough for the task itself. Travel may require additional room."
                 )
             )
         }

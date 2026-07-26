@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 
-enum PlaceOrigin: String, Codable, CaseIterable, Identifiable {
+nonisolated enum PlaceOrigin: String, Codable, CaseIterable, Identifiable {
     case home = "Home"
     case work = "Work"
     case either = "Anywhere"
@@ -10,7 +10,7 @@ enum PlaceOrigin: String, Codable, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-enum TravelMode: String, Codable, CaseIterable, Identifiable {
+nonisolated enum TravelMode: String, Codable, CaseIterable, Identifiable {
     case driving = "Driving"
     case walking = "Walking"
     case transit = "Transit"
@@ -26,7 +26,7 @@ enum TravelMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct PlacePreference: Codable, Identifiable, Hashable {
+nonisolated struct PlacePreference: Codable, Identifiable, Hashable {
     var id = UUID()
     var query: String
     var name: String
@@ -95,7 +95,7 @@ struct PlacePreference: Codable, Identifiable, Hashable {
     }
 }
 
-struct PlaceDayHours: Codable, Identifiable, Hashable {
+nonisolated struct PlaceDayHours: Codable, Identifiable, Hashable {
     var id: UUID
     var weekday: Int
     var opensAtMinutes: Int
@@ -232,7 +232,7 @@ struct PlaceDayHours: Codable, Identifiable, Hashable {
     }
 }
 
-struct LifestyleProfile: Codable, Equatable {
+nonisolated struct LifestyleProfile: Codable, Equatable {
     var completedOnboarding = false
     var lifestyleDescription = ""
     var homeAddress = ""
@@ -261,7 +261,6 @@ struct LifestyleProfile: Codable, Equatable {
         guard let weekday = components.weekday,
               let hour = components.hour,
               let minute = components.minute,
-              protectWorkHours,
               workDays.contains(weekday) else {
             return .home
         }
@@ -328,18 +327,18 @@ final class PreferencesStore: ObservableObject {
         profile.placePreferences.removeAll {
             Self.normalized($0.query) == key && $0.origin == origin
         }
-        profile.placePreferences.append(
-            PlacePreference(
-                query: query,
-                name: name,
-                address: address,
-                origin: origin,
-                placeID: placeID,
-                latitude: latitude,
-                longitude: longitude,
-                weeklyHours: existing?.weeklyHours ?? []
-            )
+        var rememberedPlace = PlacePreference(
+            query: query,
+            name: name,
+            address: address,
+            origin: origin,
+            placeID: placeID,
+            latitude: latitude,
+            longitude: longitude,
+            weeklyHours: existing?.weeklyHours ?? []
         )
+        rememberedPlace.hoursLastVerified = existing?.hoursLastVerified
+        profile.placePreferences.append(rememberedPlace)
     }
 
     func place(matching destination: String) -> PlacePreference? {

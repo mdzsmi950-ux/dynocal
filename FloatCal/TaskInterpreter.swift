@@ -6,7 +6,7 @@
 import Foundation
 import FoundationModels
 
-struct InterpretedTaskDraft {
+nonisolated struct InterpretedTaskDraft {
     let title: String
     let durationMinutes: Int
     let durationSource: TaskFactSource
@@ -18,12 +18,13 @@ struct InterpretedTaskDraft {
     let priority: TaskPriority
     let destinationQuery: String
     let placeRequirement: TaskPlaceRequirement
+    let travelMode: TravelMode?
     let preferredTimeOfDay: String
     let isFixed: Bool
     let requiresBusinessHours: Bool
 }
 
-struct StatedDateRange: Equatable {
+nonisolated struct StatedDateRange: Equatable {
     let earliestStart: Date
     let deadline: Date
 }
@@ -33,6 +34,7 @@ nonisolated struct ExplicitTaskFacts: Equatable {
     var deadline: Date?
     var durationMinutes: Int?
     var priority: TaskPriority?
+    var travelMode: TravelMode?
     var preferredTimeOfDay: String?
     var isFixed: Bool?
     var requiresBusinessHours = false
@@ -49,6 +51,13 @@ nonisolated struct TaskTextConstraints {
         if let range = dateRange(in: text, now: now, calendar: calendar) {
             facts.startDate = range.earliestStart
             facts.deadline = range.deadline
+        } else if let window = relativeDayWindow(
+            in: text,
+            now: now,
+            calendar: calendar
+        ) {
+            facts.startDate = window.earliestStart
+            facts.deadline = window.deadline
         }
 
         for detected in statedDates(in: text) {
@@ -75,6 +84,13 @@ nonisolated struct TaskTextConstraints {
                 Int(end.timeIntervalSince(start) / 60)
             )
             facts.isFixed = true
+        } else if mentionsNamedCalendarDay(in: text),
+                  let clock = exactClock(in: text),
+                  let day = statedDay(in: text, now: now, calendar: calendar),
+                  let start = date(on: day, clock: clock, calendar: calendar) {
+            facts.startDate = start
+            facts.deadline = nil
+            facts.isFixed = true
         }
 
         if facts.durationMinutes == nil {
@@ -82,6 +98,7 @@ nonisolated struct TaskTextConstraints {
         }
 
         facts.priority = statedPriority(in: text)
+        facts.travelMode = statedTravelMode(in: text)
         facts.preferredTimeOfDay = statedPreferredTime(in: text)
         facts.requiresBusinessHours = mentionsBusinessHours(in: text)
 
@@ -144,7 +161,7 @@ nonisolated struct TaskTextConstraints {
                 year: startYear,
                 month: startParts.month,
                 day: startParts.day,
-                hour: 9
+                hour: 0
             )
         )
 
@@ -157,7 +174,7 @@ nonisolated struct TaskTextConstraints {
                     year: startYear,
                     month: startParts.month,
                     day: startParts.day,
-                    hour: 9
+                    hour: 0
                 )
             )
         }
@@ -329,6 +346,86 @@ nonisolated struct TaskTextConstraints {
         return (start, end)
     }
 
+    private static func exactClock(in text: String) -> Clock? {
+        let pattern = #"(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+              ) else {
+            return nil
+        }
+        let source = text as NSString
+        let prefixLength = min(match.range.location, 35)
+        let prefix = source.substring(
+            with: NSRange(
+                location: match.range.location - prefixLength,
+                length: prefixLength
+            )
+        )
+        if prefix.range(
+            of: #"(?i)\b(open|opens|opening|hours?|closes?)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return nil
+        }
+        guard let hour = intCapture(1, match: match, source: source),
+              let marker = stringCapture(3, match: match, source: source) else {
+            return nil
+        }
+        return normalizedClock(
+            hour: hour,
+            minute: intCapture(2, match: match, source: source) ?? 0,
+            marker: marker
+        )
+    }
+
+    private static func mentionsNamedCalendarDay(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func relativeDayWindow(
+        in text: String,
+        now: Date,
+        calendar: Calendar
+    ) -> StatedDateRange? {
+        let day: Date
+        if text.range(
+            of: #"(?i)\btomorrow\b"#,
+            options: .regularExpression
+        ) != nil {
+            day = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: calendar.startOfDay(for: now)
+            ) ?? now
+        } else if text.range(
+            of: #"(?i)\b(today|tonight)\b"#,
+            options: .regularExpression
+        ) != nil {
+            day = calendar.startOfDay(for: now)
+        } else {
+            return nil
+        }
+
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day),
+              let deadline = calendar.date(
+                byAdding: .minute,
+                value: -1,
+                to: nextDay
+              ) else {
+            return nil
+        }
+        let earliestStart = calendar.isDate(day, inSameDayAs: now) ? now : day
+        return StatedDateRange(
+            earliestStart: earliestStart,
+            deadline: deadline
+        )
+    }
+
     private static func statedDay(
         in text: String,
         now: Date,
@@ -447,6 +544,28 @@ nonisolated struct TaskTextConstraints {
         return nil
     }
 
+    private static func statedTravelMode(in text: String) -> TravelMode? {
+        if text.range(
+            of: #"(?i)\b(public\s+transit|mass\s+transit|take\s+(?:the\s+)?(?:bus|train|subway)|by\s+(?:bus|train|subway))\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .transit
+        }
+        if text.range(
+            of: #"(?i)\b(walk|walking|on\s+foot)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .walking
+        }
+        if text.range(
+            of: #"(?i)\b(drive|driving|by\s+car)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .driving
+        }
+        return nil
+    }
+
     private static func statedPreferredTime(in text: String) -> String? {
         for label in ["Morning", "Afternoon", "Evening", "Night"] {
             if text.range(
@@ -539,15 +658,6 @@ private enum GeneratedTaskPriority {
 }
 
 @Generable
-private enum GeneratedTimeOfDay {
-    case none
-    case morning
-    case afternoon
-    case evening
-    case night
-}
-
-@Generable
 private struct GeneratedTaskDetails {
     @Guide(description: "A two-to-four-word action title. Exclude dates, times, duration, explanations, and location unless essential.")
     var title: String
@@ -570,17 +680,11 @@ private struct GeneratedTaskDetails {
     @Guide(description: "True only when the task must happen at a physical destination. False for thinking, calling, writing, emailing, online work, or anything that can be done anywhere.")
     var requiresDestination: Bool
 
-    var preferredTimeOfDay: GeneratedTimeOfDay
-
     @Guide(description: "True only when the request indicates the exact time must not move.")
     var isFixed: Bool
 
     @Guide(description: "True when correct placement depends on current opening or closing hours that were not explicitly supplied.")
     var needsBusinessHoursLookup: Bool
-
-    @Guide(description: "True only when the person explicitly supplied a duration.")
-    var durationWasExplicit: Bool
-
 }
 
 final class TaskInterpreter {
@@ -633,10 +737,6 @@ final class TaskInterpreter {
             in: description,
             now: now
         )
-        let statedRange = TaskTextConstraints.dateRange(
-            in: description,
-            now: now
-        )
         let location = details.location.trimmingCharacters(in: .whitespacesAndNewlines)
         let category = map(details.category)
         let placeRequirement: TaskPlaceRequirement = details.requiresDestination
@@ -650,25 +750,26 @@ final class TaskInterpreter {
         let modelDeadline = TaskTextConstraints.mentionsDeadline(in: description)
             ? parseISO8601(details.deadlineISO8601)
             : nil
-        let startDate = explicit.startDate ?? statedRange?.earliestStart ?? modelStart
-        let deadline = explicit.deadline ?? statedRange?.deadline ?? modelDeadline
+        let startDate = explicit.startDate ?? modelStart
+        let deadline = explicit.deadline ?? modelDeadline
 
         return InterpretedTaskDraft(
             title: shortTitle(details.title),
             durationMinutes: explicit.durationMinutes ?? details.durationMinutes,
             durationSource: explicit.durationMinutes == nil ? .modelInferred : .explicit,
             startDate: startDate,
-            startSource: explicit.startDate == nil && statedRange == nil
+            startSource: explicit.startDate == nil
                 ? (modelStart == nil ? .unknown : .modelInferred)
                 : .explicit,
             category: category,
             deadline: deadline,
-            deadlineSource: explicit.deadline == nil && statedRange == nil
+            deadlineSource: explicit.deadline == nil
                 ? (modelDeadline == nil ? .unknown : .modelInferred)
                 : .explicit,
             priority: explicit.priority ?? map(details.priority),
             destinationQuery: location,
             placeRequirement: placeRequirement,
+            travelMode: explicit.travelMode,
             preferredTimeOfDay: explicit.preferredTimeOfDay ?? "",
             isFixed: isFixed,
             requiresBusinessHours: explicit.requiresBusinessHours
@@ -707,13 +808,4 @@ final class TaskInterpreter {
         }
     }
 
-    private func label(_ value: GeneratedTimeOfDay) -> String {
-        switch value {
-        case .none: ""
-        case .morning: "Morning"
-        case .afternoon: "Afternoon"
-        case .evening: "Evening"
-        case .night: "Night"
-        }
-    }
 }

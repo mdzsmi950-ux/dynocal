@@ -106,6 +106,24 @@ struct FloatCalTests {
         #expect(profile.expectedOrigin(at: saturdayAfternoon, calendar: calendar) == .home)
     }
 
+    @Test func workLocationInferenceDoesNotDependOnBlockingWorkHours() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        var profile = LifestyleProfile()
+        profile.protectWorkHours = false
+        profile.workDays = [2, 3, 4, 5, 6]
+        profile.workStartMinutes = 9 * 60
+        profile.workEndMinutes = 17 * 60
+        let wednesdayAtTwo = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 29, hour: 14)
+        )!
+
+        #expect(
+            profile.expectedOrigin(at: wednesdayAtTwo, calendar: calendar)
+                == .work
+        )
+    }
+
     @Test func recentCalendarLocationOverridesLifestyleOrigin() {
         let departure = Date(timeIntervalSince1970: 20_000)
         var profile = LifestyleProfile()
@@ -182,7 +200,7 @@ struct FloatCalTests {
             calendar.dateComponents(
                 [.year, .month, .day, .hour, .minute],
                 from: range!.earliestStart
-            ) == DateComponents(year: 2026, month: 8, day: 27, hour: 9, minute: 0)
+            ) == DateComponents(year: 2026, month: 8, day: 27, hour: 0, minute: 0)
         )
         #expect(
             calendar.dateComponents(
@@ -227,6 +245,52 @@ struct FloatCalTests {
         #expect(facts.isFixed == true)
     }
 
+    @Test func todayWithoutATimeCreatesATodayWindowFromNow() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 26, hour: 14, minute: 7)
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Meditate today",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(facts.startDate == now)
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.deadline!
+            ) == DateComponents(year: 2026, month: 7, day: 26, hour: 23, minute: 59)
+        )
+    }
+
+    @Test func todayAtAnExactTimeDoesNotDependOnTheModel() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 26, hour: 8)
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Meditate today at 10am for 20 minutes",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(year: 2026, month: 7, day: 26, hour: 10, minute: 0)
+        )
+        #expect(facts.deadline == nil)
+        #expect(facts.durationMinutes == 20)
+        #expect(facts.isFixed == true)
+    }
+
     @Test func statedDurationAndPriorityOverrideModelGuesses() {
         let facts = TaskTextConstraints.explicitFacts(
             in: "Submit expense report. It takes 25 minutes. High priority. Movable.",
@@ -245,6 +309,27 @@ struct FloatCalTests {
         )
 
         #expect(facts.durationMinutes == 30)
+    }
+
+    @Test func explicitTravelModeOverridesTheLifestyleDefault() {
+        #expect(
+            TaskTextConstraints.explicitFacts(
+                in: "Take public transit to return books",
+                now: Date()
+            ).travelMode == .transit
+        )
+        #expect(
+            TaskTextConstraints.explicitFacts(
+                in: "Walk to the dry cleaner",
+                now: Date()
+            ).travelMode == .walking
+        )
+        #expect(
+            TaskTextConstraints.explicitFacts(
+                in: "Drive to Costco",
+                now: Date()
+            ).travelMode == .driving
+        )
     }
 
     @Test func datedAppointmentDoesNotDependOnModelDateGuess() {
@@ -374,6 +459,29 @@ struct FloatCalTests {
         #expect(TaskCompletenessEngine.issues(for: facts).isEmpty)
     }
 
+    @Test func deadlineMustLeaveRoomForTheWorkDuration() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let facts = TaskReasoningFacts(
+            title: TaskFact("Long task", source: .explicit),
+            workDurationMinutes: TaskFact(60, source: .explicit),
+            earliestStart: TaskFact(start, source: .explicit),
+            deadline: TaskFact(
+                start.addingTimeInterval(30 * 60),
+                source: .explicit
+            ),
+            priority: TaskFact(.medium, source: .modelInferred),
+            canReflow: TaskFact(true, source: .explicit),
+            placeRequirement: TaskFact(.anywhere, source: .explicit),
+            destinationQuery: TaskFact("", source: .unknown),
+            destinationAddress: TaskFact("", source: .unknown),
+            fixedStart: TaskFact(nil, source: .unknown),
+            requiresBusinessHours: false,
+            hasSavedBusinessHours: false
+        )
+
+        #expect(TaskCompletenessEngine.issues(for: facts).map(\.kind) == [.dateConflict])
+    }
+
     @Test func businessHoursContainWholeTaskNotTravel() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -486,6 +594,7 @@ struct FloatCalTests {
             priority: .medium,
             preferredTimeOfDay: "",
             location: "Costco",
+            travelMode: .driving,
             isMovable: true,
             requiresBusinessHours: true,
             reflowCount: 0,
@@ -517,6 +626,34 @@ struct FloatCalTests {
         #expect(place.query == "Costco")
         #expect(place.weeklyHours.isEmpty)
         #expect(place.hoursLastVerified == nil)
+    }
+
+    @Test @MainActor func rememberingAPlaceDoesNotPretendItsHoursWereReverified() {
+        let suiteName = "FloatCalTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = PreferencesStore(defaults: defaults)
+
+        store.rememberPlace(
+            query: "Costco",
+            name: "Costco Wholesale",
+            address: "123 Main Street",
+            origin: .home
+        )
+        var place = store.profile.placePreferences[0]
+        let verifiedAt = Date(timeIntervalSince1970: 10_000)
+        place.weeklyHours = PlaceDayHours.standardWeek
+        place.hoursLastVerified = verifiedAt
+        store.updatePlace(place)
+
+        store.rememberPlace(
+            query: "Costco",
+            name: "Costco Wholesale",
+            address: "123 Main Street",
+            origin: .home
+        )
+
+        #expect(store.profile.placePreferences[0].hoursLastVerified == verifiedAt)
     }
 
     @Test func lifestyleProfileMigratesToDrivingWithoutLosingSettings() throws {
@@ -582,6 +719,7 @@ struct FloatCalTests {
             priority: priority,
             preferredTimeOfDay: "",
             location: "",
+            travelMode: nil,
             isMovable: true,
             requiresBusinessHours: false,
             reflowCount: 0,

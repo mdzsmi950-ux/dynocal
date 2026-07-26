@@ -48,13 +48,13 @@ struct ContentView: View {
     @State private var newTaskDestinationQuery = ""
     @State private var newTaskDestinationSource = TaskFactSource.unknown
     @State private var newTaskPlaceRequirement = TaskPlaceRequirement.anywhere
+    @State private var newTaskTravelMode: TravelMode?
     @State private var newTaskRequiresBusinessHours = false
     @State private var newTaskIsMovable = true
     @State private var isInterpretingTask = false
     @State private var hasAttemptedAnalysis = false
     @State private var taskInterpretationMessage: String?
     @State private var interpretedTimePreference = ""
-    @State private var interpretedAsFixed = false
     @State private var isManualMode = false
     @State private var isShowingOptionalDetails = false
     @State private var isShowingSettings = false
@@ -610,6 +610,14 @@ struct ContentView: View {
                         .foregroundStyle(.red)
                 }
 
+                Picker("Travel", selection: $newTaskTravelMode) {
+                    Text("Lifestyle Default").tag(nil as TravelMode?)
+                    ForEach(TravelMode.allCases) { mode in
+                        Label(mode.rawValue, systemImage: mode.systemImage)
+                            .tag(Optional(mode))
+                    }
+                }
+
                 Toggle(
                     "Place has opening hours",
                     isOn: $newTaskRequiresBusinessHours
@@ -773,11 +781,11 @@ struct ContentView: View {
         newTaskDestinationQuery = ""
         newTaskDestinationSource = .unknown
         newTaskPlaceRequirement = .anywhere
+        newTaskTravelMode = nil
         newTaskRequiresBusinessHours = false
         newTaskIsMovable = true
         taskInterpretationMessage = nil
         interpretedTimePreference = ""
-        interpretedAsFixed = false
         hasAttemptedAnalysis = false
         isManualMode = true
         isShowingOptionalDetails = false
@@ -812,11 +820,11 @@ struct ContentView: View {
             ?? task.location
         newTaskDestinationSource = task.location.isEmpty ? .unknown : .userConfirmed
         newTaskPlaceRequirement = task.location.isEmpty ? .anywhere : .destination
+        newTaskTravelMode = task.travelMode
         newTaskRequiresBusinessHours = task.requiresBusinessHours
         newTaskIsMovable = task.isMovable
         taskInterpretationMessage = nil
         interpretedTimePreference = task.preferredTimeOfDay
-        interpretedAsFixed = false
         hasAttemptedAnalysis = false
         isManualMode = true
         isShowingOptionalDetails = true
@@ -893,9 +901,11 @@ struct ContentView: View {
                 newTaskPlaceRequirement = draft.placeRequirement
                 newTaskLocation = ""
                 newTaskDestinationSource = .unknown
+                newTaskTravelMode = draft.placeRequirement == .destination
+                    ? draft.travelMode
+                    : nil
                 newTaskRequiresBusinessHours = draft.requiresBusinessHours
                 interpretedTimePreference = draft.preferredTimeOfDay
-                interpretedAsFixed = draft.isFixed
                 newTaskIsMovable = !draft.isFixed
                 isShowingOptionalDetails = draft.isFixed
                     || draft.deadline != nil
@@ -1038,6 +1048,7 @@ struct ContentView: View {
                     newTaskLocation = ""
                     newTaskDestinationQuery = ""
                     newTaskDestinationSource = .unknown
+                    newTaskTravelMode = nil
                     newTaskRequiresBusinessHours = false
                 }
             }
@@ -1183,6 +1194,7 @@ struct ContentView: View {
                         priority: newTaskPriority,
                         preferredTimeOfDay: interpretedTimePreference,
                         location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                        travelMode: newTaskTravelMode,
                         isMovable: newTaskIsMovable,
                         requiresBusinessHours: newTaskRequiresBusinessHours,
                         allowFixedConflict: allowFixedConflict
@@ -1198,6 +1210,7 @@ struct ContentView: View {
                         priority: newTaskPriority,
                         preferredTimeOfDay: interpretedTimePreference,
                         location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                        travelMode: newTaskTravelMode,
                         isMovable: newTaskIsMovable,
                         requiresBusinessHours: newTaskRequiresBusinessHours,
                         createAsOverdue: hasConfirmedPastStart,
@@ -1238,7 +1251,7 @@ struct ContentView: View {
     private func refreshTasks() {
         do {
             tasks = try calendarService.tasks()
-            statusText = tasks.isEmpty ? nil : "Loaded \(tasks.count) task(s)"
+            statusText = nil
             promptForImportedTaskDetailsIfNeeded()
         } catch {
             statusText = "Could not load tasks: \(error.localizedDescription)"
@@ -1569,6 +1582,7 @@ private struct TaskClarificationView: View {
     @EnvironmentObject private var preferences: PreferencesStore
     @StateObject private var placeSearch = PlaceSearchService()
     @State private var manualLocation = ""
+    @State private var didConfirmInferredTiming = false
 
     let issues: [TaskClarificationIssue]
     let locationQuery: String
@@ -1602,7 +1616,16 @@ private struct TaskClarificationView: View {
         if has(.businessHours), savedPlace?.weeklyHours.isEmpty != false {
             return false
         }
-        if has(.dateConflict), !hasDeadline || deadline <= startDate {
+        if has(.dateConflict) {
+            guard hasDeadline else { return false }
+            let minimumEnd = startDate.addingTimeInterval(
+                TimeInterval(durationMinutes * 60)
+            )
+            if deadline < minimumEnd {
+                return false
+            }
+        }
+        if has(.timing), !didConfirmInferredTiming {
             return false
         }
         return true
@@ -1685,6 +1708,7 @@ private struct TaskClarificationView: View {
                         }
                         Button("Use This Timing") {
                             onTimingConfirmed()
+                            didConfirmInferredTiming = true
                         }
                     } header: {
                         Text("Confirm the timing")
@@ -1830,6 +1854,21 @@ private struct TaskClarificationView: View {
                 guard has(.destination), !locationQuery.isEmpty else { return }
                 await placeSearch.search(locationQuery, near: originAddress)
             }
+            .onChange(of: startDate) { _, _ in
+                guard has(.timing) else { return }
+                onTimingConfirmed()
+                didConfirmInferredTiming = true
+            }
+            .onChange(of: deadline) { _, _ in
+                guard has(.timing) else { return }
+                onTimingConfirmed()
+                didConfirmInferredTiming = true
+            }
+            .onChange(of: hasDeadline) { _, _ in
+                guard has(.timing) else { return }
+                onTimingConfirmed()
+                didConfirmInferredTiming = true
+            }
         }
     }
 
@@ -1907,7 +1946,7 @@ private struct PButton: View {
                 perform: confirm
             )
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Reschedule overdue tasks")
+            .accessibilityLabel("Reflow overdue tasks")
             .accessibilityValue("\(overdueTaskCount) overdue")
             .accessibilityHint("Press and hold to confirm. Release early to cancel.")
             .accessibilityAddTraits(.isButton)

@@ -57,13 +57,14 @@ struct LifestyleSettingsView: View {
                 }
 
                 Section("Work") {
-                    Toggle("Protect work hours", isOn: profileBinding(\.protectWorkHours))
+                    weekdayPicker
+                    DatePicker("Starts", selection: timeBinding(\.workStartMinutes), displayedComponents: .hourAndMinute)
+                    DatePicker("Ends", selection: timeBinding(\.workEndMinutes), displayedComponents: .hourAndMinute)
 
-                    if preferences.profile.protectWorkHours {
-                        weekdayPicker
-                        DatePicker("Starts", selection: timeBinding(\.workStartMinutes), displayedComponents: .hourAndMinute)
-                        DatePicker("Ends", selection: timeBinding(\.workEndMinutes), displayedComponents: .hourAndMinute)
-                    }
+                    Toggle(
+                        "Keep non-work tasks outside these hours",
+                        isOn: profileBinding(\.protectWorkHours)
+                    )
 
                     TextField("Work address", text: profileBinding(\.workAddress))
                         .textContentType(.fullStreetAddress)

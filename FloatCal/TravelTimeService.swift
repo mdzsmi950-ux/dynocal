@@ -21,7 +21,8 @@ final class TravelTimeService {
     func estimatedMinutes(
         from origin: SchedulingOrigin,
         to destination: String,
-        departureDate: Date
+        departureDate: Date,
+        travelMode: TravelMode? = nil
     ) async -> Int? {
         guard let originText = origin.address,
               !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -34,7 +35,8 @@ final class TravelTimeService {
             origin: PreferencesStore.normalized(originText),
             destination: PreferencesStore.normalized(destination),
             timeBucket: Int(departureDate.timeIntervalSince1970 / (30 * 60)),
-            travelMode: PreferencesStore.shared.profile.effectiveTravelMode
+            travelMode: travelMode
+                ?? PreferencesStore.shared.profile.effectiveTravelMode
         )
         if let cached = routeCache[key] {
             return cached
