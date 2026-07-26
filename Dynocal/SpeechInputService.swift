@@ -84,10 +84,11 @@ final class SpeechInputService: ObservableObject {
 
             recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 let transcription = result?.bestTranscription.formattedString
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 let isFinal = result?.isFinal == true
 
                 Task { @MainActor in
-                    if let transcription {
+                    if let transcription, !transcription.isEmpty {
                         onTranscription(transcription)
                     }
 

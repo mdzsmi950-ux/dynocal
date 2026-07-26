@@ -563,8 +563,10 @@ struct ContentView: View {
             dictationPrefix = trimmedText.isEmpty ? "" : "\(trimmedText) "
         }
 
+        let prefixAtRecordingStart = dictationPrefix
         speechInput.toggle { transcription in
-            newTaskDescription = dictationPrefix + transcription
+            guard !transcription.isEmpty else { return }
+            newTaskDescription = prefixAtRecordingStart + transcription
             taskInterpretationMessage = nil
         }
     }
