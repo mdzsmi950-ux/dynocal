@@ -31,13 +31,18 @@ struct ContentView: View {
     @State private var newTaskTitle = ""
     @State private var newTaskDescription = ""
     @State private var newTaskStartDate = Self.defaultTaskStartDate()
+    @State private var newTaskStartSource = TaskFactSource.defaultValue
     @State private var newTaskDurationMinutes = 30
+    @State private var newTaskDurationSource = TaskFactSource.defaultValue
     @State private var newTaskCategory = TaskCategory.none
-    @State private var newTaskTravelTimeMinutes = 0
     @State private var newTaskHasDeadline = false
     @State private var newTaskDeadline = Self.defaultTaskStartDate()
-    @State private var newTaskPriority = TaskPriority.none
+    @State private var newTaskPriority = TaskPriority.medium
     @State private var newTaskLocation = ""
+    @State private var newTaskDestinationQuery = ""
+    @State private var newTaskDestinationSource = TaskFactSource.unknown
+    @State private var newTaskPlaceRequirement = TaskPlaceRequirement.anywhere
+    @State private var newTaskRequiresBusinessHours = false
     @State private var newTaskIsMovable = true
     @State private var isInterpretingTask = false
     @State private var taskInterpretationMessage: String?
@@ -46,9 +51,7 @@ struct ContentView: View {
     @State private var isShowingTaskDetails = false
     @State private var isShowingSettings = false
     @State private var isShowingClarification = false
-    @State private var durationNeedsConfirmation = false
-    @State private var locationNeedsConfirmation = false
-    @State private var travelNeedsConfirmation = false
+    @State private var clarificationIssues: [TaskClarificationIssue] = []
     @State private var dictationPrefix = ""
     @StateObject private var speechInput = SpeechInputService()
     @AppStorage("taskSortMode") private var taskSortModeRawValue = TaskSortMode.priority.rawValue
@@ -385,14 +388,14 @@ struct ContentView: View {
                         TextField("Task Name", text: $newTaskTitle)
 
                         DatePicker(
-                            "When",
-                            selection: $newTaskStartDate,
+                            newTaskIsMovable ? "Earliest Start" : "Task Starts",
+                            selection: confirmedStartBinding,
                             displayedComponents: [.date, .hourAndMinute]
                         )
 
                         Stepper(
                             "Duration: \(newTaskDurationMinutes) min",
-                            value: $newTaskDurationMinutes,
+                            value: confirmedDurationBinding,
                             in: 5...480,
                             step: 5
                         )
@@ -403,16 +406,14 @@ struct ContentView: View {
                             }
                         }
 
-                        Stepper(
-                            newTaskTravelTimeMinutes == 0
-                                ? "Travel Time: None"
-                                : "Travel Time: \(newTaskTravelTimeMinutes) min",
-                            value: $newTaskTravelTimeMinutes,
-                            in: 0...240,
-                            step: 5
-                        )
+                        TextField("Location", text: confirmedLocationBinding)
 
-                        TextField("Location", text: $newTaskLocation)
+                        if newTaskPlaceRequirement == .destination {
+                            Toggle(
+                                "Place has opening hours",
+                                isOn: $newTaskRequiresBusinessHours
+                            )
+                        }
 
                         Toggle("Deadline", isOn: $newTaskHasDeadline)
 
@@ -457,20 +458,22 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingClarification) {
                 TaskClarificationView(
-                    locationQuery: newTaskLocation,
+                    issues: clarificationIssues,
+                    locationQuery: newTaskDestinationQuery,
                     origin: clarificationOrigin,
                     originAddress: clarificationOriginAddress,
-                    durationNeedsConfirmation: durationNeedsConfirmation,
-                    locationNeedsConfirmation: locationNeedsConfirmation,
-                    travelNeedsConfirmation: travelNeedsConfirmation,
-                    durationMinutes: $newTaskDurationMinutes,
-                    travelTimeMinutes: $newTaskTravelTimeMinutes,
+                    title: $newTaskTitle,
+                    durationMinutes: confirmedDurationBinding,
+                    startDate: confirmedStartBinding,
+                    hasDeadline: $newTaskHasDeadline,
+                    deadline: $newTaskDeadline,
                     location: $newTaskLocation,
-                    isMovable: $newTaskIsMovable
+                    onPlaceSelected: {
+                        newTaskDestinationSource = .userConfirmed
+                        refreshClarificationIssues()
+                    }
                 ) {
-                    durationNeedsConfirmation = false
-                    locationNeedsConfirmation = false
-                    travelNeedsConfirmation = false
+                    refreshClarificationIssues()
                     isShowingTaskDetails = true
                 }
                 .environmentObject(preferences)
@@ -539,20 +542,23 @@ struct ContentView: View {
         newTaskTitle = ""
         newTaskDescription = ""
         newTaskStartDate = Self.defaultTaskStartDate()
+        newTaskStartSource = .defaultValue
         newTaskDurationMinutes = 30
+        newTaskDurationSource = .defaultValue
         newTaskCategory = .none
-        newTaskTravelTimeMinutes = 0
         newTaskHasDeadline = false
         newTaskDeadline = newTaskStartDate
-        newTaskPriority = .none
+        newTaskPriority = .medium
         newTaskLocation = ""
+        newTaskDestinationQuery = ""
+        newTaskDestinationSource = .unknown
+        newTaskPlaceRequirement = .anywhere
+        newTaskRequiresBusinessHours = false
         newTaskIsMovable = true
         taskInterpretationMessage = nil
         interpretedTimePreference = ""
         interpretedAsFixed = false
-        durationNeedsConfirmation = false
-        locationNeedsConfirmation = false
-        travelNeedsConfirmation = false
+        clarificationIssues = []
         isShowingClarification = false
         isShowingTaskDetails = false
         dictationPrefix = ""
@@ -568,21 +574,25 @@ struct ContentView: View {
         editingTask = task
         newTaskTitle = task.title
         newTaskDescription = task.taskDescription
-        newTaskStartDate = task.startDate
+        newTaskStartDate = task.isMovable ? task.startDate : task.workStartDate
+        newTaskStartSource = .userConfirmed
         newTaskDurationMinutes = task.durationMinutes
+        newTaskDurationSource = .userConfirmed
         newTaskCategory = task.category
-        newTaskTravelTimeMinutes = task.travelTimeMinutes
         newTaskHasDeadline = task.deadline != nil
         newTaskDeadline = task.deadline ?? task.startDate
         newTaskPriority = task.priority
         newTaskLocation = task.location
+        newTaskDestinationQuery = preferences.place(matching: task.location)?.query
+            ?? task.location
+        newTaskDestinationSource = task.location.isEmpty ? .unknown : .userConfirmed
+        newTaskPlaceRequirement = task.location.isEmpty ? .anywhere : .destination
+        newTaskRequiresBusinessHours = task.requiresBusinessHours
         newTaskIsMovable = task.isMovable
         taskInterpretationMessage = nil
-        interpretedTimePreference = ""
+        interpretedTimePreference = task.preferredTimeOfDay
         interpretedAsFixed = false
-        durationNeedsConfirmation = false
-        locationNeedsConfirmation = false
-        travelNeedsConfirmation = false
+        clarificationIssues = []
         isShowingTaskDetails = true
         dictationPrefix = ""
         isShowingNewTaskSheet = true
@@ -645,19 +655,23 @@ struct ContentView: View {
 
                 newTaskTitle = draft.title
                 newTaskDurationMinutes = draft.durationMinutes
+                newTaskDurationSource = draft.durationSource
                 newTaskCategory = draft.category
-                newTaskTravelTimeMinutes = draft.travelTimeMinutes
                 newTaskPriority = draft.priority
-                newTaskLocation = draft.location
+                newTaskDestinationQuery = draft.destinationQuery
+                newTaskPlaceRequirement = draft.placeRequirement
+                newTaskLocation = ""
+                newTaskDestinationSource = .unknown
+                newTaskRequiresBusinessHours = draft.requiresBusinessHours
                 interpretedTimePreference = draft.preferredTimeOfDay
                 interpretedAsFixed = draft.isFixed
                 newTaskIsMovable = !draft.isFixed
-                durationNeedsConfirmation = !draft.durationWasExplicit
-                locationNeedsConfirmation = draft.locationNeedsConfirmation
-                travelNeedsConfirmation = draft.travelNeedsConfirmation
 
                 if let startDate = draft.startDate {
                     newTaskStartDate = startDate
+                    newTaskStartSource = .explicit
+                } else {
+                    newTaskStartSource = .defaultValue
                 }
 
                 if let deadline = draft.deadline {
@@ -667,21 +681,20 @@ struct ContentView: View {
                     newTaskHasDeadline = false
                 }
 
-                if !draft.location.isEmpty,
+                if !draft.destinationQuery.isEmpty,
                    let savedPlace = preferences.preferredPlace(
-                       for: draft.location,
+                       for: draft.destinationQuery,
                        origin: clarificationOrigin
                    ) {
                     newTaskLocation = savedPlace.address
-                    locationNeedsConfirmation = false
+                    newTaskDestinationSource = .rememberedPreference
                 }
 
                 isShowingTaskDetails = true
-                isShowingClarification = durationNeedsConfirmation
-                    || locationNeedsConfirmation
-                    || travelNeedsConfirmation
+                refreshClarificationIssues()
+                isShowingClarification = !clarificationIssues.isEmpty
 
-                if draft.needsBusinessHoursLookup {
+                if draft.requiresBusinessHours {
                     taskInterpretationMessage = "Analyzed with Apple Intelligence. Confirm the location and timing because current business hours aren’t available."
                 } else {
                     taskInterpretationMessage = "Analyzed with Apple Intelligence. Review before creating."
@@ -730,6 +743,86 @@ struct ContentView: View {
         }
     }
 
+    private var confirmedDurationBinding: Binding<Int> {
+        Binding(
+            get: { newTaskDurationMinutes },
+            set: {
+                newTaskDurationMinutes = $0
+                newTaskDurationSource = .userConfirmed
+            }
+        )
+    }
+
+    private var confirmedStartBinding: Binding<Date> {
+        Binding(
+            get: { newTaskStartDate },
+            set: {
+                newTaskStartDate = $0
+                newTaskStartSource = .userConfirmed
+            }
+        )
+    }
+
+    private var confirmedLocationBinding: Binding<String> {
+        Binding(
+            get: { newTaskLocation },
+            set: {
+                newTaskLocation = $0
+                let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                newTaskDestinationSource = trimmed.isEmpty ? .unknown : .userConfirmed
+                newTaskPlaceRequirement = trimmed.isEmpty ? .anywhere : .destination
+            }
+        )
+    }
+
+    private func refreshClarificationIssues() {
+        let savedPlace = preferences.place(matching: newTaskLocation)
+        let facts = TaskReasoningFacts(
+            title: TaskFact(
+                newTaskTitle,
+                source: newTaskTitle.isEmpty ? .unknown : .modelInferred
+            ),
+            workDurationMinutes: TaskFact(
+                newTaskDurationMinutes,
+                source: newTaskDurationSource
+            ),
+            earliestStart: TaskFact(
+                Optional(newTaskStartDate),
+                source: newTaskStartSource
+            ),
+            deadline: TaskFact(
+                newTaskHasDeadline ? Optional(newTaskDeadline) : nil,
+                source: newTaskHasDeadline ? .explicit : .unknown
+            ),
+            priority: TaskFact(newTaskPriority, source: .modelInferred),
+            canReflow: TaskFact(newTaskIsMovable, source: .explicit),
+            placeRequirement: TaskFact(
+                newTaskPlaceRequirement,
+                source: newTaskPlaceRequirement == .destination
+                    ? .modelInferred
+                    : .defaultValue
+            ),
+            destinationQuery: TaskFact(
+                newTaskDestinationQuery,
+                source: newTaskDestinationQuery.isEmpty ? .unknown : .modelInferred
+            ),
+            destinationAddress: TaskFact(
+                newTaskLocation,
+                source: newTaskDestinationSource
+            ),
+            fixedStart: TaskFact(
+                newTaskIsMovable
+                    || [.defaultValue, .unknown].contains(newTaskStartSource)
+                    ? nil
+                    : Optional(newTaskStartDate),
+                source: newTaskIsMovable ? .unknown : newTaskStartSource
+            ),
+            requiresBusinessHours: newTaskRequiresBusinessHours,
+            hasSavedBusinessHours: !(savedPlace?.weeklyHours.isEmpty ?? true)
+        )
+        clarificationIssues = TaskCompletenessEngine.issues(for: facts)
+    }
+
     private func saveTask() {
         let trimmedDescription = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let enteredTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -740,52 +833,63 @@ struct ContentView: View {
             return
         }
 
+        refreshClarificationIssues()
+        guard clarificationIssues.isEmpty else {
+            isShowingClarification = true
+            statusText = "Confirm the missing task details first"
+            return
+        }
+
         isCreatingTask = true
         statusText = editingTask == nil ? "Creating \(trimmedTitle)..." : "Saving \(trimmedTitle)..."
 
-        do {
-            let savedTask: DynocalTask
+        Task {
+            do {
+                let savedTask: DynocalTask
 
-            if let editingTask {
-                savedTask = try calendarService.updateTask(
-                    id: editingTask.id,
-                    title: trimmedTitle,
-                    description: trimmedDescription,
-                    startDate: newTaskStartDate,
-                    durationMinutes: newTaskDurationMinutes,
-                    category: newTaskCategory,
-                    travelTimeMinutes: newTaskTravelTimeMinutes,
-                    deadline: newTaskHasDeadline ? newTaskDeadline : nil,
-                    priority: newTaskPriority,
-                    location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
-                    isMovable: newTaskIsMovable
-                )
-            } else {
-                savedTask = try calendarService.addTask(
-                    title: trimmedTitle,
-                    description: trimmedDescription,
-                    startDate: newTaskStartDate,
-                    durationMinutes: newTaskDurationMinutes,
-                    category: newTaskCategory,
-                    travelTimeMinutes: newTaskTravelTimeMinutes,
-                    deadline: newTaskHasDeadline ? newTaskDeadline : nil,
-                    priority: newTaskPriority,
-                    location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
-                    isMovable: newTaskIsMovable
-                )
+                if let editingTask {
+                    savedTask = try await calendarService.updateTask(
+                        id: editingTask.id,
+                        title: trimmedTitle,
+                        description: trimmedDescription,
+                        startDate: newTaskStartDate,
+                        durationMinutes: newTaskDurationMinutes,
+                        category: newTaskCategory,
+                        deadline: newTaskHasDeadline ? newTaskDeadline : nil,
+                        priority: newTaskPriority,
+                        preferredTimeOfDay: interpretedTimePreference,
+                        location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                        isMovable: newTaskIsMovable,
+                        requiresBusinessHours: newTaskRequiresBusinessHours
+                    )
+                } else {
+                    savedTask = try await calendarService.addTask(
+                        title: trimmedTitle,
+                        description: trimmedDescription,
+                        startDate: newTaskStartDate,
+                        durationMinutes: newTaskDurationMinutes,
+                        category: newTaskCategory,
+                        deadline: newTaskHasDeadline ? newTaskDeadline : nil,
+                        priority: newTaskPriority,
+                        preferredTimeOfDay: interpretedTimePreference,
+                        location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                        isMovable: newTaskIsMovable,
+                        requiresBusinessHours: newTaskRequiresBusinessHours
+                    )
+                }
+
+                refreshTasks()
+                upsertTask(savedTask)
+                speechInput.stop()
+                isShowingNewTaskSheet = false
+                self.editingTask = nil
+                statusText = "Saved \(trimmedTitle)."
+            } catch {
+                statusText = "Could not save task: \(error.localizedDescription)"
             }
 
-            refreshTasks()
-            upsertTask(savedTask)
-            speechInput.stop()
-            isShowingNewTaskSheet = false
-            self.editingTask = nil
-            statusText = "Saved \(trimmedTitle)."
-        } catch {
-            statusText = "Could not save task: \(error.localizedDescription)"
+            isCreatingTask = false
         }
-
-        isCreatingTask = false
     }
 
     private func loadInitialCalendarState() {
@@ -917,7 +1021,7 @@ struct ContentView: View {
             await Task.yield()
 
             do {
-                let result = try calendarService.rescheduleOverdueTasks()
+                let result = try await calendarService.rescheduleOverdueTasks()
                 refreshTasks()
 
                 if result.updatedTasks.isEmpty {
@@ -1102,17 +1206,41 @@ private struct TaskClarificationView: View {
     @StateObject private var placeSearch = PlaceSearchService()
     @State private var manualLocation = ""
 
+    let issues: [TaskClarificationIssue]
     let locationQuery: String
     let origin: PlaceOrigin
     let originAddress: String
-    let durationNeedsConfirmation: Bool
-    let locationNeedsConfirmation: Bool
-    let travelNeedsConfirmation: Bool
+    @Binding var title: String
     @Binding var durationMinutes: Int
-    @Binding var travelTimeMinutes: Int
+    @Binding var startDate: Date
+    @Binding var hasDeadline: Bool
+    @Binding var deadline: Date
     @Binding var location: String
-    @Binding var isMovable: Bool
+    let onPlaceSelected: () -> Void
     let onConfirm: () -> Void
+
+    private var savedPlace: PlacePreference? {
+        preferences.place(matching: location)
+    }
+
+    private var canContinue: Bool {
+        if has(.title), title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if has(.duration), durationMinutes <= 0 {
+            return false
+        }
+        if has(.destination), location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if has(.businessHours), savedPlace?.weeklyHours.isEmpty != false {
+            return false
+        }
+        if has(.dateConflict), !hasDeadline || deadline <= startDate {
+            return false
+        }
+        return true
+    }
 
     var body: some View {
         NavigationStack {
@@ -1125,7 +1253,13 @@ private struct TaskClarificationView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if durationNeedsConfirmation {
+                if has(.title) {
+                    Section("What should I call this task?") {
+                        TextField("Short task name", text: $title)
+                    }
+                }
+
+                if has(.duration) {
                     Section {
                         Stepper(
                             "Duration: \(durationMinutes) min",
@@ -1134,13 +1268,41 @@ private struct TaskClarificationView: View {
                             step: 5
                         )
                     } header: {
-                        Text("How long will this take?")
+                        Text("How long will the task itself take?")
                     } footer: {
-                        Text("The description didn’t include a duration. This is an estimate—adjust it before continuing.")
+                        Text("Travel is calculated separately for each possible calendar slot.")
                     }
                 }
 
-                if locationNeedsConfirmation {
+                if has(.fixedStart) {
+                    Section("When is this fixed task?") {
+                        DatePicker(
+                            "Starts",
+                            selection: $startDate,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                    }
+                }
+
+                if has(.dateConflict) {
+                    Section("Check the timing") {
+                        DatePicker(
+                            "Earliest Start",
+                            selection: $startDate,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        Toggle("Deadline", isOn: $hasDeadline)
+                        if hasDeadline {
+                            DatePicker(
+                                "Due",
+                                selection: $deadline,
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                        }
+                    }
+                }
+
+                if has(.destination) {
                     Section {
                         if placeSearch.isSearching {
                             HStack {
@@ -1158,8 +1320,12 @@ private struct TaskClarificationView: View {
                                     query: locationQuery,
                                     name: candidate.name,
                                     address: location,
-                                    origin: origin
+                                    origin: origin,
+                                    placeID: candidate.id,
+                                    latitude: candidate.latitude,
+                                    longitude: candidate.longitude
                                 )
+                                onPlaceSelected()
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack {
@@ -1196,40 +1362,62 @@ private struct TaskClarificationView: View {
                                 address: trimmed,
                                 origin: origin
                             )
+                            onPlaceSelected()
                         }
                         .disabled(manualLocation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                        Button("Skip Location", role: .destructive) {
-                            location = ""
-                        }
                     } header: {
-                        Text("Which \(locationQuery)?")
+                        Text(locationQuery.isEmpty ? "Where does this happen?" : "Which \(locationQuery)?")
                     } footer: {
                         Text("Your choice becomes the usual \(locationQuery) from \(origin.rawValue). Change it anytime in Settings.")
                     }
                 }
 
-                if travelNeedsConfirmation {
+                if has(.businessHours) {
                     Section {
-                        Stepper(
-                            travelTimeMinutes == 0
-                                ? "Travel Time: Not Set"
-                                : "Travel Time: \(travelTimeMinutes) min",
-                            value: $travelTimeMinutes,
-                            in: 0...240,
-                            step: 5
-                        )
-                    } header: {
-                        Text("How much travel time should I reserve?")
-                    } footer: {
-                        Text("Dynocal could not reliably estimate the route yet. You can adjust this after choosing the location.")
-                    }
-                }
+                        if let savedPlace {
+                            NavigationLink {
+                                PlaceHoursEditorView(place: savedPlace)
+                                    .environmentObject(preferences)
+                            } label: {
+                                Label(
+                                    savedPlace.weeklyHours.isEmpty
+                                        ? "Set Weekly Hours"
+                                        : "Review Weekly Hours",
+                                    systemImage: "clock.badge.checkmark"
+                                )
+                            }
 
-                Section {
-                    Toggle("Can I reflow this task?", isOn: $isMovable)
-                } footer: {
-                    Text("This applies only to this task. Dynocal never turns it into a general preference.")
+                            if !savedPlace.weeklyHours.isEmpty {
+                                Label("Weekly hours saved", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            }
+                        } else {
+                            Button {
+                                let trimmed = location.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                                guard !trimmed.isEmpty else { return }
+                                preferences.rememberPlace(
+                                    query: locationQuery.isEmpty ? trimmed : locationQuery,
+                                    name: locationQuery.isEmpty ? trimmed : locationQuery,
+                                    address: trimmed,
+                                    origin: origin
+                                )
+                                onPlaceSelected()
+                            } label: {
+                                Label("Save This Place", systemImage: "mappin.and.ellipse")
+                            }
+                            .disabled(
+                                location.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                ).isEmpty
+                            )
+                        }
+                    } header: {
+                        Text("What hours is this place open?")
+                    } footer: {
+                        Text("Save these once. Dynocal will reuse them and you can review them later in Settings.")
+                    }
                 }
             }
             .navigationTitle("Confirm Task")
@@ -1241,13 +1429,18 @@ private struct TaskClarificationView: View {
                         dismiss()
                     }
                     .fontWeight(.semibold)
+                    .disabled(!canContinue)
                 }
             }
             .task(id: locationQuery) {
-                guard locationNeedsConfirmation else { return }
+                guard has(.destination), !locationQuery.isEmpty else { return }
                 await placeSearch.search(locationQuery, near: originAddress)
             }
         }
+    }
+
+    private func has(_ kind: TaskClarificationKind) -> Bool {
+        issues.contains { $0.kind == kind }
     }
 }
 

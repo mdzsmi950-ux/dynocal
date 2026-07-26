@@ -59,16 +59,23 @@ struct DynocalTask: Identifiable, Hashable {
     let startDate: Date
     let endDate: Date
     let category: TaskCategory
+    let workDurationMinutes: Int
     let travelTimeMinutes: Int
     let deadline: Date?
     let priority: TaskPriority
+    let preferredTimeOfDay: String
     let location: String
     let isMovable: Bool
+    let requiresBusinessHours: Bool
     let reflowCount: Int
     let manualOrder: Int?
 
     var durationMinutes: Int {
-        Int(endDate.timeIntervalSince(startDate) / 60)
+        workDurationMinutes
+    }
+
+    var workStartDate: Date {
+        startDate.addingTimeInterval(TimeInterval(travelTimeMinutes * 60))
     }
 
     nonisolated static func sorted(_ tasks: [DynocalTask], by mode: TaskSortMode) -> [DynocalTask] {
@@ -137,6 +144,7 @@ struct RescheduleResult {
 
 private struct PlacementResult {
     let newStartDate: Date
+    let travelTimeMinutes: Int
     let skippedConflict: Bool
 }
 
@@ -197,6 +205,28 @@ struct SchedulingContextResolver {
     }
 }
 
+struct TaskTimePreference {
+    nonisolated static func matches(
+        _ preference: String,
+        date: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let hour = calendar.component(.hour, from: date)
+        switch preference.lowercased() {
+        case "morning":
+            return (5..<12).contains(hour)
+        case "afternoon":
+            return (12..<17).contains(hour)
+        case "evening":
+            return (17..<21).contains(hour)
+        case "night":
+            return hour >= 21 || hour < 5
+        default:
+            return true
+        }
+    }
+}
+
 struct DeletedTask {
     let title: String
     let startDate: Date
@@ -205,6 +235,7 @@ struct DeletedTask {
     let location: String?
 }
 
+@MainActor
 final class CalendarService {
     static let shared = CalendarService()
 
@@ -244,31 +275,41 @@ final class CalendarService {
         startDate: Date,
         durationMinutes: Int,
         category: TaskCategory,
-        travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
+        preferredTimeOfDay: String,
         location: String,
-        isMovable: Bool
-    ) throws -> DynocalTask {
+        isMovable: Bool,
+        requiresBusinessHours: Bool
+    ) async throws -> DynocalTask {
         let calendar = try dynocalCalendar()
 
         let taskDuration = TimeInterval(durationMinutes * 60)
-        let travelDuration = TimeInterval(travelTimeMinutes * 60)
-        let placedStartDate: Date
+        let placement: PlacementResult
 
         if isMovable {
-            let placement = try nextOpenStartDate(
+            placement = try await nextOpenStartDate(
                 from: startDate,
-                duration: taskDuration + travelDuration,
+                workDuration: taskDuration,
                 category: category,
                 destination: location,
+                requiresBusinessHours: requiresBusinessHours,
+                preferredTimeOfDay: preferredTimeOfDay,
+                deadline: deadline,
                 excludingEventIDs: []
             )
-            placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
         } else {
-            placedStartDate = startDate
+            placement = try await fixedPlacement(
+                taskStartDate: startDate,
+                workDuration: taskDuration,
+                destination: location,
+                requiresBusinessHours: requiresBusinessHours,
+                excludingEventIDs: []
+            )
         }
-        let endDate = placedStartDate.addingTimeInterval(taskDuration)
+        let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
+        let endDate = placement.newStartDate
+            .addingTimeInterval(travelDuration + taskDuration)
 
         if let deadline, endDate > deadline {
             throw CalendarServiceError.noRoomBeforeDeadline
@@ -276,7 +317,7 @@ final class CalendarService {
 
         let event = EKEvent(eventStore: store)
         event.title = title
-        event.startDate = placedStartDate
+        event.startDate = placement.newStartDate
         event.endDate = endDate
         event.calendar = calendar
         event.location = location
@@ -285,10 +326,12 @@ final class CalendarService {
             taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
-            travelTimeMinutes: travelTimeMinutes,
+            travelTimeMinutes: placement.travelTimeMinutes,
             deadline: deadline,
             priority: priority,
-            isMovable: isMovable
+            preferredTimeOfDay: preferredTimeOfDay,
+            isMovable: isMovable,
+            requiresBusinessHours: requiresBusinessHours
         )
 
         try store.save(event, span: .thisEvent, commit: true)
@@ -303,51 +346,63 @@ final class CalendarService {
         startDate: Date,
         durationMinutes: Int,
         category: TaskCategory,
-        travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
+        preferredTimeOfDay: String,
         location: String,
-        isMovable: Bool
-    ) throws -> DynocalTask {
+        isMovable: Bool,
+        requiresBusinessHours: Bool
+    ) async throws -> DynocalTask {
         let event = try dynocalEvent(id: id)
         let existingTask = task(from: event)
 
         event.title = title
         let taskDuration = TimeInterval(durationMinutes * 60)
-        let travelDuration = TimeInterval(travelTimeMinutes * 60)
-        let placedStartDate: Date
+        let placement: PlacementResult
 
         if isMovable {
-            let placement = try nextOpenStartDate(
+            placement = try await nextOpenStartDate(
                 from: startDate,
-                duration: taskDuration + travelDuration,
+                workDuration: taskDuration,
                 category: category,
                 destination: location,
+                requiresBusinessHours: requiresBusinessHours,
+                preferredTimeOfDay: preferredTimeOfDay,
+                deadline: deadline,
                 excludingEventIDs: [id]
             )
-            placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
         } else {
-            placedStartDate = startDate
+            placement = try await fixedPlacement(
+                taskStartDate: startDate,
+                workDuration: taskDuration,
+                destination: location,
+                requiresBusinessHours: requiresBusinessHours,
+                excludingEventIDs: [id]
+            )
         }
-        let placedEndDate = placedStartDate.addingTimeInterval(taskDuration)
+        let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
+        let placedEndDate = placement.newStartDate
+            .addingTimeInterval(travelDuration + taskDuration)
 
         if let deadline, placedEndDate > deadline {
             throw CalendarServiceError.noRoomBeforeDeadline
         }
 
-        event.startDate = placedStartDate
+        event.startDate = placement.newStartDate
         event.endDate = placedEndDate
         event.location = location
         event.notes = dynocalNotes(
             taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
-            travelTimeMinutes: travelTimeMinutes,
+            travelTimeMinutes: placement.travelTimeMinutes,
             deadline: deadline,
             priority: priority,
+            preferredTimeOfDay: preferredTimeOfDay,
             isMovable: isMovable,
             reflowCount: existingTask.reflowCount,
-            manualOrder: existingTask.manualOrder
+            manualOrder: existingTask.manualOrder,
+            requiresBusinessHours: requiresBusinessHours
         )
         event.alarms = []
 
@@ -412,7 +467,7 @@ final class CalendarService {
         return task(from: event)
     }
 
-    func rescheduleOverdueTasks() throws -> RescheduleResult {
+    func rescheduleOverdueTasks() async throws -> RescheduleResult {
         let now = Date()
         let overdueTasks = try tasks()
             .filter { $0.startDate < now && $0.isMovable }
@@ -426,17 +481,20 @@ final class CalendarService {
         for task in overdueTasks {
             let event = try dynocalEvent(id: task.id)
             let duration = storedDuration(for: event)
-            let travelDuration = TimeInterval(task.travelTimeMinutes * 60)
-            let placement = try nextOpenStartDate(
+            let placement = try await nextOpenStartDate(
                 from: nextCandidateDate,
-                duration: duration + travelDuration,
+                workDuration: duration,
                 category: task.category,
                 destination: task.location,
+                requiresBusinessHours: task.requiresBusinessHours,
+                preferredTimeOfDay: task.preferredTimeOfDay,
+                deadline: task.deadline,
                 excludingEventIDs: overdueTaskIDs
             )
+            let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
 
-            event.startDate = placement.newStartDate.addingTimeInterval(travelDuration)
-            event.endDate = event.startDate.addingTimeInterval(duration)
+            event.startDate = placement.newStartDate
+            event.endDate = event.startDate.addingTimeInterval(travelDuration + duration)
 
             if let deadline = task.deadline, event.endDate > deadline {
                 throw CalendarServiceError.noRoomBeforeDeadline
@@ -446,12 +504,14 @@ final class CalendarService {
                 taskDescription: task.taskDescription,
                 durationMinutes: task.durationMinutes,
                 category: task.category,
-                travelTimeMinutes: task.travelTimeMinutes,
+                travelTimeMinutes: placement.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                preferredTimeOfDay: task.preferredTimeOfDay,
                 isMovable: task.isMovable,
                 reflowCount: task.reflowCount + 1,
-                manualOrder: task.manualOrder
+                manualOrder: task.manualOrder,
+                requiresBusinessHours: task.requiresBusinessHours
             )
 
             try store.save(event, span: .thisEvent, commit: true)
@@ -481,9 +541,11 @@ final class CalendarService {
                 travelTimeMinutes: task.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                preferredTimeOfDay: task.preferredTimeOfDay,
                 isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
-                manualOrder: order
+                manualOrder: order,
+                requiresBusinessHours: task.requiresBusinessHours
             )
 
             try store.save(event, span: .thisEvent, commit: false)
@@ -504,9 +566,11 @@ final class CalendarService {
                 travelTimeMinutes: task.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                preferredTimeOfDay: task.preferredTimeOfDay,
                 isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
-                manualOrder: nil
+                manualOrder: nil,
+                requiresBusinessHours: task.requiresBusinessHours
             )
 
             try store.save(event, span: .thisEvent, commit: false)
@@ -577,13 +641,17 @@ final class CalendarService {
 
     private func nextOpenStartDate(
         from targetStartDate: Date,
-        duration: TimeInterval,
+        workDuration: TimeInterval,
         category: TaskCategory,
         destination: String,
+        requiresBusinessHours: Bool,
+        preferredTimeOfDay: String,
+        deadline: Date?,
         excludingEventIDs: Set<String>
-    ) throws -> PlacementResult {
-        let searchEndDate = Calendar.current.date(byAdding: .day, value: 7, to: targetStartDate)
+    ) async throws -> PlacementResult {
+        let naturalSearchEnd = Calendar.current.date(byAdding: .day, value: 7, to: targetStartDate)
             ?? targetStartDate.addingTimeInterval(7 * 24 * 60 * 60)
+        let searchEndDate = deadline.map { min($0, naturalSearchEnd) } ?? naturalSearchEnd
         let contextStartDate = targetStartDate.addingTimeInterval(
             -SchedulingContextResolver.eventAnchorWindow
         )
@@ -632,9 +700,63 @@ final class CalendarService {
         let needsKnownOrigin = !destination
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty
+        let savedHours = PreferencesStore.shared.place(matching: destination)?.weeklyHours ?? []
+
+        if requiresBusinessHours, savedHours.isEmpty {
+            throw CalendarServiceError.unknownBusinessHours
+        }
+
+        var foundKnownOrigin = !needsKnownOrigin
+        var calculatedRoute = !needsKnownOrigin
+
+        var isTryingPreferredWindow = !preferredTimeOfDay.isEmpty
 
         while candidateStartDate < searchEndDate {
-            let candidateEndDate = candidateStartDate.addingTimeInterval(duration)
+            if let conflict = blockedIntervals.first(where: {
+                candidateStartDate >= $0.start && candidateStartDate < $0.end
+            }) {
+                candidateStartDate = roundedUpToNextFiveMinutes(conflict.end)
+                continue
+            }
+
+            var travelTimeMinutes = 0
+            if needsKnownOrigin {
+                let origin = SchedulingContextResolver.origin(
+                    at: candidateStartDate,
+                    events: contextEvents,
+                    profile: PreferencesStore.shared.profile
+                )
+                guard origin != .unknown else {
+                    candidateStartDate = candidateStartDate.addingTimeInterval(5 * 60)
+                    continue
+                }
+                foundKnownOrigin = true
+
+                guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
+                    from: origin,
+                    to: destination,
+                    departureDate: candidateStartDate
+                ) else {
+                    candidateStartDate = candidateStartDate.addingTimeInterval(30 * 60)
+                    continue
+                }
+                travelTimeMinutes = estimatedMinutes
+                calculatedRoute = true
+            }
+
+            let travelDuration = TimeInterval(travelTimeMinutes * 60)
+            let taskStartDate = candidateStartDate.addingTimeInterval(travelDuration)
+            let candidateEndDate = taskStartDate.addingTimeInterval(workDuration)
+
+            if let deadline, candidateEndDate > deadline {
+                break
+            }
+
+            if isTryingPreferredWindow,
+               !TaskTimePreference.matches(preferredTimeOfDay, date: taskStartDate) {
+                candidateStartDate = candidateStartDate.addingTimeInterval(30 * 60)
+                continue
+            }
 
             if let conflict = blockedIntervals.first(where: {
                 candidateStartDate < $0.end && candidateEndDate > $0.start
@@ -643,27 +765,189 @@ final class CalendarService {
                 continue
             }
 
-            if needsKnownOrigin,
-               SchedulingContextResolver.origin(
-                    at: candidateStartDate,
-                    events: contextEvents,
-                    profile: PreferencesStore.shared.profile
-               ) == .unknown {
-                candidateStartDate = candidateStartDate.addingTimeInterval(5 * 60)
-                continue
+            if requiresBusinessHours {
+                let weekday = Calendar.current.component(.weekday, from: taskStartDate)
+                guard let hours = savedHours.first(where: { $0.weekday == weekday }),
+                      hours.contains(start: taskStartDate, end: candidateEndDate) else {
+                    candidateStartDate = startOfNextDay(after: candidateStartDate)
+                    continue
+                }
             }
 
             return PlacementResult(
                 newStartDate: candidateStartDate,
+                travelTimeMinutes: travelTimeMinutes,
                 skippedConflict: candidateStartDate > firstCandidateStartDate
             )
         }
 
-        if needsKnownOrigin {
+        if isTryingPreferredWindow {
+            isTryingPreferredWindow = false
+            candidateStartDate = roundedUpToNextFiveMinutes(targetStartDate)
+            calculatedRoute = !needsKnownOrigin
+
+            while candidateStartDate < searchEndDate {
+                if let conflict = blockedIntervals.first(where: {
+                    candidateStartDate >= $0.start && candidateStartDate < $0.end
+                }) {
+                    candidateStartDate = roundedUpToNextFiveMinutes(conflict.end)
+                    continue
+                }
+
+                var travelTimeMinutes = 0
+                if needsKnownOrigin {
+                    let origin = SchedulingContextResolver.origin(
+                        at: candidateStartDate,
+                        events: contextEvents,
+                        profile: PreferencesStore.shared.profile
+                    )
+                    guard origin != .unknown else {
+                        candidateStartDate = candidateStartDate.addingTimeInterval(5 * 60)
+                        continue
+                    }
+                    foundKnownOrigin = true
+                    guard let estimatedMinutes = await TravelTimeService.shared.estimatedMinutes(
+                        from: origin,
+                        to: destination,
+                        departureDate: candidateStartDate
+                    ) else {
+                        candidateStartDate = candidateStartDate.addingTimeInterval(30 * 60)
+                        continue
+                    }
+                    travelTimeMinutes = estimatedMinutes
+                    calculatedRoute = true
+                }
+
+                let travelDuration = TimeInterval(travelTimeMinutes * 60)
+                let taskStartDate = candidateStartDate.addingTimeInterval(travelDuration)
+                let candidateEndDate = taskStartDate.addingTimeInterval(workDuration)
+                if let deadline, candidateEndDate > deadline {
+                    break
+                }
+                if let conflict = blockedIntervals.first(where: {
+                    candidateStartDate < $0.end && candidateEndDate > $0.start
+                }) {
+                    candidateStartDate = roundedUpToNextFiveMinutes(conflict.end)
+                    continue
+                }
+                if requiresBusinessHours {
+                    let weekday = Calendar.current.component(.weekday, from: taskStartDate)
+                    guard let hours = savedHours.first(where: { $0.weekday == weekday }),
+                          hours.contains(start: taskStartDate, end: candidateEndDate) else {
+                        candidateStartDate = startOfNextDay(after: candidateStartDate)
+                        continue
+                    }
+                }
+                return PlacementResult(
+                    newStartDate: candidateStartDate,
+                    travelTimeMinutes: travelTimeMinutes,
+                    skippedConflict: candidateStartDate > firstCandidateStartDate
+                )
+            }
+        }
+
+        if needsKnownOrigin, !foundKnownOrigin {
             throw CalendarServiceError.unknownTravelOrigin
+        }
+        if needsKnownOrigin, !calculatedRoute {
+            throw CalendarServiceError.travelRouteUnavailable
+        }
+        if deadline != nil {
+            throw CalendarServiceError.noRoomBeforeDeadline
         }
 
         throw CalendarServiceError.noAvailableTime
+    }
+
+    private func fixedPlacement(
+        taskStartDate: Date,
+        workDuration: TimeInterval,
+        destination: String,
+        requiresBusinessHours: Bool,
+        excludingEventIDs: Set<String>
+    ) async throws -> PlacementResult {
+        let trimmedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDestination.isEmpty else {
+            return PlacementResult(
+                newStartDate: taskStartDate,
+                travelTimeMinutes: 0,
+                skippedConflict: false
+            )
+        }
+
+        let contextStart = taskStartDate.addingTimeInterval(
+            -SchedulingContextResolver.eventAnchorWindow
+        )
+        let predicate = store.predicateForEvents(
+            withStart: contextStart,
+            end: taskStartDate.addingTimeInterval(workDuration),
+            calendars: store.calendars(for: .event)
+        )
+        let contextEvents = store.events(matching: predicate)
+            .filter {
+                !$0.isAllDay
+                    && !($0.eventIdentifier.map(excludingEventIDs.contains) ?? false)
+            }
+            .compactMap { event -> CalendarContextEvent? in
+                guard let start = event.startDate, let end = event.endDate else { return nil }
+                let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let structuredTitle = event.structuredLocation?.title?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return CalendarContextEvent(
+                    start: start,
+                    end: end,
+                    location: location?.isEmpty == false ? location : structuredTitle
+                )
+            }
+        let origin = SchedulingContextResolver.origin(
+            at: taskStartDate,
+            events: contextEvents,
+            profile: PreferencesStore.shared.profile
+        )
+        guard origin != .unknown else {
+            throw CalendarServiceError.unknownTravelOrigin
+        }
+        guard let travelTimeMinutes = await TravelTimeService.shared.estimatedMinutes(
+            from: origin,
+            to: trimmedDestination,
+            departureDate: taskStartDate
+        ) else {
+            throw CalendarServiceError.travelRouteUnavailable
+        }
+
+        let taskEndDate = taskStartDate.addingTimeInterval(workDuration)
+        if requiresBusinessHours {
+            let hours = PreferencesStore.shared.place(matching: trimmedDestination)?
+                .weeklyHours
+                .first {
+                    $0.weekday == Calendar.current.component(.weekday, from: taskStartDate)
+                }
+            guard let hours else {
+                throw CalendarServiceError.unknownBusinessHours
+            }
+            guard hours.contains(start: taskStartDate, end: taskEndDate) else {
+                throw CalendarServiceError.outsideBusinessHours
+            }
+        }
+
+        return PlacementResult(
+            newStartDate: taskStartDate.addingTimeInterval(
+                TimeInterval(-travelTimeMinutes * 60)
+            ),
+            travelTimeMinutes: travelTimeMinutes,
+            skippedConflict: false
+        )
+    }
+
+    private func startOfNextDay(after date: Date) -> Date {
+        let calendar = Calendar.current
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: date) ?? date
+        return calendar.date(
+            bySettingHour: 0,
+            minute: 0,
+            second: 0,
+            of: nextDay
+        ) ?? nextDay
     }
 
     private func lifestyleBlockedIntervals(
@@ -743,9 +1027,11 @@ final class CalendarService {
         travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
+        preferredTimeOfDay: String = "",
         isMovable: Bool = true,
         reflowCount: Int = 0,
-        manualOrder: Int? = nil
+        manualOrder: Int? = nil,
+        requiresBusinessHours: Bool = false
     ) -> String {
         let deadlineTimestamp = deadline.map { String($0.timeIntervalSince1970) } ?? "none"
         let manualOrderValue = manualOrder.map(String.init) ?? "none"
@@ -755,7 +1041,7 @@ final class CalendarService {
         Created by Dynocal
 
         DYNOCAL_META_START
-        version: 5
+        version: 6
         itemType: task
         scheduleType: \(isMovable ? "movable" : "fixed")
         taskDescriptionBase64: \(encodedDescription)
@@ -764,8 +1050,10 @@ final class CalendarService {
         travelTimeMinutes: \(travelTimeMinutes)
         deadlineTimestamp: \(deadlineTimestamp)
         priority: \(priority.rawValue)
+        preferredTimeOfDay: \(preferredTimeOfDay)
         reflowCount: \(reflowCount)
         manualOrder: \(manualOrderValue)
+        requiresBusinessHours: \(requiresBusinessHours)
         DYNOCAL_META_END
         """
     }
@@ -775,16 +1063,26 @@ final class CalendarService {
             .flatMap(TaskCategory.init(rawValue:)) ?? .none
         let travelTimeMinutes = metadataValue("travelTimeMinutes", in: event.notes)
             .flatMap(Int.init) ?? 0
+        let workDurationMinutes = metadataValue("durationMinutes", in: event.notes)
+            .flatMap(Int.init)
+            ?? max(
+                5,
+                Int(event.endDate.timeIntervalSince(event.startDate) / 60)
+                    - travelTimeMinutes
+            )
         let deadline = metadataValue("deadlineTimestamp", in: event.notes)
             .flatMap(TimeInterval.init)
             .map(Date.init(timeIntervalSince1970:))
         let priority = metadataValue("priority", in: event.notes)
             .flatMap(TaskPriority.init(rawValue:)) ?? .none
+        let preferredTimeOfDay = metadataValue("preferredTimeOfDay", in: event.notes) ?? ""
         let isMovable = metadataValue("scheduleType", in: event.notes) != "fixed"
         let reflowCount = metadataValue("reflowCount", in: event.notes)
             .flatMap(Int.init) ?? 0
         let manualOrder = metadataValue("manualOrder", in: event.notes)
             .flatMap(Int.init)
+        let requiresBusinessHours = metadataValue("requiresBusinessHours", in: event.notes)
+            .flatMap(Bool.init) ?? false
         let taskDescription = metadataValue("taskDescriptionBase64", in: event.notes)
             .flatMap { Data(base64Encoded: $0) }
             .flatMap { String(data: $0, encoding: .utf8) }
@@ -798,11 +1096,14 @@ final class CalendarService {
             startDate: event.startDate,
             endDate: event.endDate,
             category: category,
+            workDurationMinutes: workDurationMinutes,
             travelTimeMinutes: travelTimeMinutes,
             deadline: deadline,
             priority: priority,
+            preferredTimeOfDay: preferredTimeOfDay,
             location: event.location ?? "",
             isMovable: isMovable,
+            requiresBusinessHours: requiresBusinessHours,
             reflowCount: reflowCount,
             manualOrder: manualOrder
         )
@@ -845,6 +1146,9 @@ enum CalendarServiceError: LocalizedError {
     case noRoomBeforeDeadline
     case noAvailableTime
     case unknownTravelOrigin
+    case travelRouteUnavailable
+    case unknownBusinessHours
+    case outsideBusinessHours
 
     var errorDescription: String? {
         switch self {
@@ -858,6 +1162,12 @@ enum CalendarServiceError: LocalizedError {
             return "No available time was found in the next seven days."
         case .unknownTravelOrigin:
             return "Dynocal could not confidently tell where you would leave from. Add locations to nearby calendar events or set Home and Work in Settings."
+        case .travelRouteUnavailable:
+            return "Dynocal could not calculate a route for this destination. Check the saved addresses and try again."
+        case .unknownBusinessHours:
+            return "This task depends on business hours that have not been saved yet. Review the place in Settings."
+        case .outsideBusinessHours:
+            return "This fixed time falls outside the saved business hours."
         }
     }
 }

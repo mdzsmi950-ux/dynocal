@@ -116,11 +116,26 @@ struct LifestyleSettingsView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(preferences.profile.placePreferences) { place in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(place.name)
-                                    Text("\(place.origin.rawValue) · \(place.address)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                NavigationLink {
+                                    PlaceHoursEditorView(place: place)
+                                        .environmentObject(preferences)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(place.name)
+                                        Text("\(place.origin.rawValue) · \(place.address)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+
+                                        Text(
+                                            place.weeklyHours.isEmpty
+                                                ? "Hours not saved"
+                                                : "Hours saved · \(place.hoursLastVerified?.formatted(date: .abbreviated, time: .omitted) ?? "review needed")"
+                                        )
+                                        .font(.caption2)
+                                        .foregroundStyle(
+                                            place.weeklyHours.isEmpty ? .orange : .secondary
+                                        )
+                                    }
                                 }
                             }
                             .onDelete(perform: preferences.removePlaces)

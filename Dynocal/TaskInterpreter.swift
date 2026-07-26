@@ -9,18 +9,16 @@ import FoundationModels
 struct InterpretedTaskDraft {
     let title: String
     let durationMinutes: Int
+    let durationSource: TaskFactSource
     let startDate: Date?
     let category: TaskCategory
-    let travelTimeMinutes: Int
     let deadline: Date?
     let priority: TaskPriority
-    let location: String
+    let destinationQuery: String
+    let placeRequirement: TaskPlaceRequirement
     let preferredTimeOfDay: String
     let isFixed: Bool
-    let needsBusinessHoursLookup: Bool
-    let durationWasExplicit: Bool
-    let locationNeedsConfirmation: Bool
-    let travelNeedsConfirmation: Bool
+    let requiresBusinessHours: Bool
 }
 
 struct StatedDateRange: Equatable {
@@ -206,11 +204,11 @@ private struct GeneratedTaskDetails {
     var category: GeneratedTaskCategory
     var priority: GeneratedTaskPriority
 
-    @Guide(description: "Travel time in minutes. Use zero when travel is not needed. For an errand at a physical place, provide a conservative estimate; exact routing will be confirmed separately.", .range(0...240))
-    var travelTimeMinutes: Int
-
     @Guide(description: "Place or business name from the request, or an empty string.")
     var location: String
+
+    @Guide(description: "True only when the task must happen at a physical destination. False for thinking, calling, writing, emailing, online work, or anything that can be done anywhere.")
+    var requiresDestination: Bool
 
     var preferredTimeOfDay: GeneratedTimeOfDay
 
@@ -223,8 +221,6 @@ private struct GeneratedTaskDetails {
     @Guide(description: "True only when the person explicitly supplied a duration.")
     var durationWasExplicit: Bool
 
-    @Guide(description: "True for a chain, generic business, neighborhood, or other place that needs a specific location selected.")
-    var locationNeedsConfirmation: Bool
 }
 
 final class TaskInterpreter {
@@ -279,28 +275,28 @@ final class TaskInterpreter {
         )
         let location = details.location.trimmingCharacters(in: .whitespacesAndNewlines)
         let category = map(details.category)
-        let needsTravel = !location.isEmpty && category == .errand
+        let placeRequirement: TaskPlaceRequirement = details.requiresDestination
+            || (!location.isEmpty && category == .errand)
+            ? .destination
+            : .anywhere
 
         return InterpretedTaskDraft(
             title: shortTitle(details.title),
             durationMinutes: details.durationMinutes,
+            durationSource: details.durationWasExplicit ? .explicit : .modelInferred,
             startDate: statedRange?.earliestStart
                 ?? parseISO8601(details.earliestStartISO8601),
             category: category,
-            travelTimeMinutes: details.travelTimeMinutes,
             deadline: statedRange?.deadline
                 ?? parseISO8601(details.deadlineISO8601),
             priority: map(details.priority),
-            location: location,
+            destinationQuery: location,
+            placeRequirement: placeRequirement,
             preferredTimeOfDay: TaskTextConstraints.hasExplicitTimeOfDay(in: description)
                 ? label(details.preferredTimeOfDay)
                 : "",
             isFixed: details.isFixed,
-            needsBusinessHoursLookup: details.needsBusinessHoursLookup,
-            durationWasExplicit: details.durationWasExplicit,
-            locationNeedsConfirmation: details.locationNeedsConfirmation
-                || needsSpecificPlaceSelection(location),
-            travelNeedsConfirmation: needsTravel
+            requiresBusinessHours: details.needsBusinessHoursLookup
         )
     }
 
@@ -309,16 +305,6 @@ final class TaskInterpreter {
             .split(whereSeparator: \.isWhitespace)
             .prefix(4)
             .joined(separator: " ")
-    }
-
-    private func needsSpecificPlaceSelection(_ location: String) -> Bool {
-        guard !location.isEmpty else { return false }
-
-        let startsWithStreetNumber = location.range(
-            of: #"^\s*\d+\s+\S+"#,
-            options: .regularExpression
-        ) != nil
-        return !startsWithStreetNumber
     }
 
     private func parseISO8601(_ value: String) -> Date? {
@@ -338,7 +324,7 @@ final class TaskInterpreter {
 
     private func map(_ value: GeneratedTaskPriority) -> TaskPriority {
         switch value {
-        case .none: .none
+        case .none: .medium
         case .low: .low
         case .medium: .medium
         case .high: .high

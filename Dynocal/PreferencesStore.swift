@@ -16,6 +16,102 @@ struct PlacePreference: Codable, Identifiable, Hashable {
     var name: String
     var address: String
     var origin: PlaceOrigin
+    var placeID: String?
+    var latitude: Double?
+    var longitude: Double?
+    var weeklyHours: [PlaceDayHours]
+    var hoursLastVerified: Date?
+
+    init(
+        id: UUID = UUID(),
+        query: String,
+        name: String,
+        address: String,
+        origin: PlaceOrigin,
+        placeID: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        weeklyHours: [PlaceDayHours] = []
+    ) {
+        self.id = id
+        self.query = query
+        self.name = name
+        self.address = address
+        self.origin = origin
+        self.placeID = placeID
+        self.latitude = latitude
+        self.longitude = longitude
+        self.weeklyHours = weeklyHours
+        hoursLastVerified = weeklyHours.isEmpty ? nil : Date()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case query
+        case name
+        case address
+        case origin
+        case placeID
+        case latitude
+        case longitude
+        case weeklyHours
+        case hoursLastVerified
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        query = try container.decode(String.self, forKey: .query)
+        name = try container.decode(String.self, forKey: .name)
+        address = try container.decode(String.self, forKey: .address)
+        origin = try container.decode(PlaceOrigin.self, forKey: .origin)
+        placeID = try container.decodeIfPresent(String.self, forKey: .placeID)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        weeklyHours = try container.decodeIfPresent(
+            [PlaceDayHours].self,
+            forKey: .weeklyHours
+        ) ?? []
+        hoursLastVerified = try container.decodeIfPresent(
+            Date.self,
+            forKey: .hoursLastVerified
+        )
+    }
+}
+
+struct PlaceDayHours: Codable, Identifiable, Hashable {
+    var weekday: Int
+    var opensAtMinutes: Int
+    var closesAtMinutes: Int
+
+    var id: Int { weekday }
+
+    static var standardWeek: [PlaceDayHours] {
+        (1...7).map {
+            PlaceDayHours(
+                weekday: $0,
+                opensAtMinutes: 9 * 60,
+                closesAtMinutes: 20 * 60
+            )
+        }
+    }
+
+    nonisolated func contains(
+        start: Date,
+        end: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard calendar.component(.weekday, from: start) == weekday,
+              calendar.isDate(start, inSameDayAs: end) else {
+            return false
+        }
+
+        let startComponents = calendar.dateComponents([.hour, .minute], from: start)
+        let endComponents = calendar.dateComponents([.hour, .minute], from: end)
+        let startMinutes = (startComponents.hour ?? 0) * 60 + (startComponents.minute ?? 0)
+        let endMinutes = (endComponents.hour ?? 0) * 60 + (endComponents.minute ?? 0)
+        return startMinutes >= opensAtMinutes && endMinutes <= closesAtMinutes
+    }
 }
 
 struct LifestyleProfile: Codable, Equatable {
@@ -88,14 +184,61 @@ final class PreferencesStore: ObservableObject {
         }
     }
 
-    func rememberPlace(query: String, name: String, address: String, origin: PlaceOrigin) {
+    func rememberPlace(
+        query: String,
+        name: String,
+        address: String,
+        origin: PlaceOrigin,
+        placeID: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
+    ) {
         let key = Self.normalized(query)
+        let addressKey = Self.normalized(address)
+        let existing = profile.placePreferences.first {
+            (Self.normalized($0.query) == key && $0.origin == origin)
+                || (placeID != nil && $0.placeID == placeID)
+                || Self.normalized($0.address) == addressKey
+        }
         profile.placePreferences.removeAll {
             Self.normalized($0.query) == key && $0.origin == origin
         }
         profile.placePreferences.append(
-            PlacePreference(query: query, name: name, address: address, origin: origin)
+            PlacePreference(
+                query: query,
+                name: name,
+                address: address,
+                origin: origin,
+                placeID: placeID,
+                latitude: latitude,
+                longitude: longitude,
+                weeklyHours: existing?.weeklyHours ?? []
+            )
         )
+    }
+
+    func place(matching destination: String) -> PlacePreference? {
+        let key = Self.normalized(destination)
+        return profile.placePreferences.first {
+            Self.normalized($0.address) == key
+                || Self.normalized("\($0.name), \($0.address)") == key
+        }
+    }
+
+    func updatePlace(_ place: PlacePreference) {
+        let addressKey = Self.normalized(place.address)
+        var updated = profile
+        for index in updated.placePreferences.indices {
+            let candidate = updated.placePreferences[index]
+            let isSamePlace = candidate.id == place.id
+                || (place.placeID != nil && candidate.placeID == place.placeID)
+                || Self.normalized(candidate.address) == addressKey
+            guard isSamePlace else { continue }
+
+            updated.placePreferences[index].weeklyHours = place.weeklyHours
+            updated.placePreferences[index].hoursLastVerified = place.hoursLastVerified
+        }
+        profile = updated
     }
 
     func removePlaces(at offsets: IndexSet) {

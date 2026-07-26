@@ -198,6 +198,131 @@ struct DynocalTests {
         #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter after 5 p.m."))
     }
 
+    @Test func completenessAsksOnlyForUserResolvableBlockingFacts() {
+        let facts = reasoningFacts(
+            durationSource: .modelInferred,
+            placeRequirement: .destination,
+            destinationQuery: "Costco",
+            destinationAddress: "",
+            requiresBusinessHours: true,
+            hasSavedBusinessHours: false
+        )
+
+        let issues = TaskCompletenessEngine.issues(for: facts)
+
+        #expect(issues.map(\.kind) == [.duration, .destination])
+        #expect(!issues.contains { $0.title.localizedCaseInsensitiveContains("travel") })
+    }
+
+    @Test func resolvedPlaceThenRequiresSavedBusinessHours() {
+        let facts = reasoningFacts(
+            durationSource: .explicit,
+            placeRequirement: .destination,
+            destinationQuery: "Costco",
+            destinationAddress: "Costco, 123 Main Street",
+            requiresBusinessHours: true,
+            hasSavedBusinessHours: false
+        )
+
+        #expect(TaskCompletenessEngine.issues(for: facts).map(\.kind) == [.businessHours])
+    }
+
+    @Test func anywhereTaskDoesNotNeedTravelFacts() {
+        let facts = reasoningFacts(
+            durationSource: .explicit,
+            placeRequirement: .anywhere,
+            destinationQuery: "",
+            destinationAddress: "",
+            requiresBusinessHours: false,
+            hasSavedBusinessHours: false
+        )
+
+        #expect(TaskCompletenessEngine.issues(for: facts).isEmpty)
+    }
+
+    @Test func businessHoursContainWholeTaskNotTravel() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let hours = PlaceDayHours(
+            weekday: 6,
+            opensAtMinutes: 9 * 60,
+            closesAtMinutes: 20 * 60
+        )
+        let taskStart = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 19, minute: 30)
+        )!
+        let taskEnd = taskStart.addingTimeInterval(30 * 60)
+
+        #expect(hours.contains(start: taskStart, end: taskEnd, calendar: calendar))
+        #expect(!hours.contains(
+            start: taskStart,
+            end: taskEnd.addingTimeInterval(5 * 60),
+            calendar: calendar
+        ))
+    }
+
+    @Test func travelExtendsCalendarBlockWithoutChangingWorkDuration() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let task = DynocalTask(
+            id: "travel",
+            title: "Buy cat litter",
+            taskDescription: "Buy cat litter",
+            startDate: start,
+            endDate: start.addingTimeInterval(50 * 60),
+            category: .errand,
+            workDurationMinutes: 30,
+            travelTimeMinutes: 20,
+            deadline: nil,
+            priority: .medium,
+            preferredTimeOfDay: "",
+            location: "Costco",
+            isMovable: true,
+            requiresBusinessHours: true,
+            reflowCount: 0,
+            manualOrder: nil
+        )
+
+        #expect(task.durationMinutes == 30)
+        #expect(task.workStartDate == start.addingTimeInterval(20 * 60))
+        #expect(task.endDate.timeIntervalSince(task.startDate) == 50 * 60)
+    }
+
+    @Test func rememberedPlacesMigrateWithoutSavedHours() throws {
+        let legacyJSON = """
+        {
+          "id": "7F69E48F-A5BA-4CC6-8E76-6BF7861B3705",
+          "query": "Costco",
+          "name": "Costco Wholesale",
+          "address": "123 Main Street",
+          "origin": "Home"
+        }
+        """
+
+        let place = try JSONDecoder().decode(
+            PlacePreference.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        #expect(place.query == "Costco")
+        #expect(place.weeklyHours.isEmpty)
+        #expect(place.hoursLastVerified == nil)
+    }
+
+    @Test func preferredTimeIsAWindowNotAPriority() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let morning = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 9)
+        )!
+        let evening = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 31, hour: 18)
+        )!
+
+        #expect(TaskTimePreference.matches("Morning", date: morning, calendar: calendar))
+        #expect(!TaskTimePreference.matches("Morning", date: evening, calendar: calendar))
+        #expect(TaskTimePreference.matches("Evening", date: evening, calendar: calendar))
+    }
+
     private func task(
         id: String,
         priority: TaskPriority,
@@ -212,13 +337,40 @@ struct DynocalTests {
             startDate: startDate,
             endDate: startDate.addingTimeInterval(1_800),
             category: .none,
+            workDurationMinutes: 30,
             travelTimeMinutes: 0,
             deadline: deadline,
             priority: priority,
+            preferredTimeOfDay: "",
             location: "",
             isMovable: true,
+            requiresBusinessHours: false,
             reflowCount: 0,
             manualOrder: manualOrder
+        )
+    }
+
+    private func reasoningFacts(
+        durationSource: TaskFactSource,
+        placeRequirement: TaskPlaceRequirement,
+        destinationQuery: String,
+        destinationAddress: String,
+        requiresBusinessHours: Bool,
+        hasSavedBusinessHours: Bool
+    ) -> TaskReasoningFacts {
+        TaskReasoningFacts(
+            title: TaskFact("Buy cat litter", source: .explicit),
+            workDurationMinutes: TaskFact(30, source: durationSource),
+            earliestStart: TaskFact(nil, source: .unknown),
+            deadline: TaskFact(nil, source: .unknown),
+            priority: TaskFact(.medium, source: .modelInferred),
+            canReflow: TaskFact(true, source: .defaultValue),
+            placeRequirement: TaskFact(placeRequirement, source: .modelInferred),
+            destinationQuery: TaskFact(destinationQuery, source: .modelInferred),
+            destinationAddress: TaskFact(destinationAddress, source: .unknown),
+            fixedStart: TaskFact(nil, source: .unknown),
+            requiresBusinessHours: requiresBusinessHours,
+            hasSavedBusinessHours: hasSavedBusinessHours
         )
     }
 

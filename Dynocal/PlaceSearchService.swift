@@ -5,6 +5,8 @@ struct PlaceCandidate: Identifiable, Hashable {
     let id: String
     let name: String
     let address: String
+    let latitude: Double
+    let longitude: Double
 }
 
 @MainActor
@@ -58,7 +60,13 @@ final class PlaceSearchService: ObservableObject {
                     ?? ""
                 let key = "\(name)|\(address)"
                 guard seen.insert(key).inserted else { return nil }
-                return PlaceCandidate(id: key, name: name, address: address)
+                return PlaceCandidate(
+                    id: item.identifier.map(String.init(describing:)) ?? key,
+                    name: name,
+                    address: address,
+                    latitude: item.location.coordinate.latitude,
+                    longitude: item.location.coordinate.longitude
+                )
             }
             .prefix(5)
             .map { $0 }
