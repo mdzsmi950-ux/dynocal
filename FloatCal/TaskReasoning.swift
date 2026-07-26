@@ -46,6 +46,7 @@ enum TaskClarificationKind: String, Equatable, Identifiable {
     case fixedStart
     case destination
     case businessHours
+    case timing
     case dateConflict
 
     var id: String { rawValue }
@@ -107,6 +108,20 @@ struct TaskCompletenessEngine {
                     kind: .fixedStart,
                     title: "When is this fixed task?",
                     explanation: "A task that cannot reflow needs an exact start time."
+                )
+            )
+        }
+
+        let startNeedsConfirmation = facts.earliestStart.value != nil
+            && facts.earliestStart.source == .modelInferred
+        let deadlineNeedsConfirmation = facts.deadline.value != nil
+            && facts.deadline.source == .modelInferred
+        if startNeedsConfirmation || deadlineNeedsConfirmation {
+            issues.append(
+                TaskClarificationIssue(
+                    kind: .timing,
+                    title: "Confirm the timing",
+                    explanation: "FloatCal found a timing clue, but it was not explicit enough to treat as a hard fact."
                 )
             )
         }

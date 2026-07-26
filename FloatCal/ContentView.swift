@@ -42,6 +42,7 @@ struct ContentView: View {
     @State private var newTaskCategory = TaskCategory.none
     @State private var newTaskHasDeadline = false
     @State private var newTaskDeadline = Self.defaultTaskStartDate()
+    @State private var newTaskDeadlineSource = TaskFactSource.unknown
     @State private var newTaskPriority = TaskPriority.medium
     @State private var newTaskLocation = ""
     @State private var newTaskDestinationQuery = ""
@@ -486,9 +487,15 @@ struct ContentView: View {
                     title: $newTaskTitle,
                     durationMinutes: confirmedDurationBinding,
                     startDate: confirmedStartBinding,
-                    hasDeadline: $newTaskHasDeadline,
-                    deadline: $newTaskDeadline,
+                    hasDeadline: confirmedHasDeadlineBinding,
+                    deadline: confirmedDeadlineBinding,
                     location: $newTaskLocation,
+                    onTimingConfirmed: {
+                        newTaskStartSource = .userConfirmed
+                        if newTaskHasDeadline {
+                            newTaskDeadlineSource = .userConfirmed
+                        }
+                    },
                     onPlaceSelected: {
                         newTaskDestinationSource = .userConfirmed
                         refreshClarificationIssues()
@@ -568,12 +575,12 @@ struct ContentView: View {
         ) {
             Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
 
-            Toggle("Deadline", isOn: $newTaskHasDeadline)
+            Toggle("Deadline", isOn: confirmedHasDeadlineBinding)
 
             if newTaskHasDeadline {
                 DatePicker(
                     "Due",
-                    selection: $newTaskDeadline,
+                    selection: confirmedDeadlineBinding,
                     displayedComponents: [.date, .hourAndMinute]
                 )
             }
@@ -760,6 +767,7 @@ struct ContentView: View {
         newTaskCategory = .none
         newTaskHasDeadline = false
         newTaskDeadline = newTaskStartDate
+        newTaskDeadlineSource = .unknown
         newTaskPriority = .medium
         newTaskLocation = ""
         newTaskDestinationQuery = ""
@@ -797,6 +805,7 @@ struct ContentView: View {
         newTaskCategory = task.category
         newTaskHasDeadline = task.deadline != nil
         newTaskDeadline = task.deadline ?? task.startDate
+        newTaskDeadlineSource = task.deadline == nil ? .unknown : .userConfirmed
         newTaskPriority = task.priority
         newTaskLocation = task.location
         newTaskDestinationQuery = preferences.place(matching: task.location)?.query
@@ -897,7 +906,7 @@ struct ContentView: View {
 
                 if let startDate = draft.startDate {
                     newTaskStartDate = startDate
-                    newTaskStartSource = .explicit
+                    newTaskStartSource = draft.startSource
                 } else {
                     newTaskStartSource = .defaultValue
                 }
@@ -905,8 +914,10 @@ struct ContentView: View {
                 if let deadline = draft.deadline {
                     newTaskHasDeadline = true
                     newTaskDeadline = deadline
+                    newTaskDeadlineSource = draft.deadlineSource
                 } else {
                     newTaskHasDeadline = false
+                    newTaskDeadlineSource = .unknown
                 }
 
                 if !draft.destinationQuery.isEmpty,
@@ -983,6 +994,26 @@ struct ContentView: View {
         )
     }
 
+    private var confirmedHasDeadlineBinding: Binding<Bool> {
+        Binding(
+            get: { newTaskHasDeadline },
+            set: {
+                newTaskHasDeadline = $0
+                newTaskDeadlineSource = $0 ? .userConfirmed : .unknown
+            }
+        )
+    }
+
+    private var confirmedDeadlineBinding: Binding<Date> {
+        Binding(
+            get: { newTaskDeadline },
+            set: {
+                newTaskDeadline = $0
+                newTaskDeadlineSource = .userConfirmed
+            }
+        )
+    }
+
     private var confirmedLocationBinding: Binding<String> {
         Binding(
             get: { newTaskLocation },
@@ -1032,7 +1063,7 @@ struct ContentView: View {
             ),
             deadline: TaskFact(
                 newTaskHasDeadline ? Optional(newTaskDeadline) : nil,
-                source: newTaskHasDeadline ? .explicit : .unknown
+                source: newTaskHasDeadline ? newTaskDeadlineSource : .unknown
             ),
             priority: TaskFact(
                 newTaskPriority,
@@ -1550,6 +1581,7 @@ private struct TaskClarificationView: View {
     @Binding var hasDeadline: Bool
     @Binding var deadline: Date
     @Binding var location: String
+    let onTimingConfirmed: () -> Void
     let onPlaceSelected: () -> Void
     let onConfirm: () -> Void
 
@@ -1633,6 +1665,31 @@ private struct TaskClarificationView: View {
                                 displayedComponents: [.date, .hourAndMinute]
                             )
                         }
+                    }
+                }
+
+                if has(.timing) {
+                    Section {
+                        DatePicker(
+                            "Earliest Start",
+                            selection: $startDate,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        Toggle("Deadline", isOn: $hasDeadline)
+                        if hasDeadline {
+                            DatePicker(
+                                "Due",
+                                selection: $deadline,
+                                displayedComponents: [.date, .hourAndMinute]
+                            )
+                        }
+                        Button("Use This Timing") {
+                            onTimingConfirmed()
+                        }
+                    } header: {
+                        Text("Confirm the timing")
+                    } footer: {
+                        Text("Explicit dates and times are protected automatically. This confirmation is only for timing inferred from context.")
                     }
                 }
 

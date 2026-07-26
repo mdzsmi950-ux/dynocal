@@ -195,7 +195,98 @@ struct FloatCalTests {
     @Test func timeOfDayMustBeExplicit() {
         #expect(!TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter during the sale"))
         #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter in the evening"))
-        #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter after 5 p.m."))
+        #expect(!TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter after 5 p.m."))
+    }
+
+    @Test func todayClockRangeIsAnExactProtectedFact() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 26, hour: 8)
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "today meditate 10am to 11am",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(year: 2026, month: 7, day: 26, hour: 10, minute: 0)
+        )
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.deadline!
+            ) == DateComponents(year: 2026, month: 7, day: 26, hour: 11, minute: 0)
+        )
+        #expect(facts.durationMinutes == 60)
+        #expect(facts.isFixed == true)
+    }
+
+    @Test func statedDurationAndPriorityOverrideModelGuesses() {
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Submit expense report. It takes 25 minutes. High priority. Movable.",
+            now: Date()
+        )
+
+        #expect(facts.durationMinutes == 25)
+        #expect(facts.priority == .high)
+        #expect(facts.isFixed == false)
+    }
+
+    @Test func compactDurationIsStillExplicit() {
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "30min, need to go get groceries",
+            now: Date()
+        )
+
+        #expect(facts.durationMinutes == 30)
+    }
+
+    @Test func datedAppointmentDoesNotDependOnModelDateGuess() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 26, hour: 8)
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Dentist appointment on July 27 at 10:00 AM for 60 minutes.",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: facts.startDate!
+            ) == DateComponents(year: 2026, month: 7, day: 27, hour: 10, minute: 0)
+        )
+        #expect(facts.durationMinutes == 60)
+        #expect(facts.isFixed == true)
+    }
+
+    @Test func storeHoursAreNotMistakenForTaskDurationOrTiming() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 26, hour: 8)
+        )!
+
+        let facts = TaskTextConstraints.explicitFacts(
+            in: "Buy groceries. Shopping takes 30 minutes. Costco is open 10am to 8:30pm.",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(facts.durationMinutes == 30)
+        #expect(facts.startDate == nil)
+        #expect(facts.deadline == nil)
+        #expect(facts.requiresBusinessHours)
     }
 
     @Test func explicitMovableLanguageOverridesModelClassification() {

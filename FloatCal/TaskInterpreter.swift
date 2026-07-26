@@ -11,8 +11,10 @@ struct InterpretedTaskDraft {
     let durationMinutes: Int
     let durationSource: TaskFactSource
     let startDate: Date?
+    let startSource: TaskFactSource
     let category: TaskCategory
     let deadline: Date?
+    let deadlineSource: TaskFactSource
     let priority: TaskPriority
     let destinationQuery: String
     let placeRequirement: TaskPlaceRequirement
@@ -26,7 +28,73 @@ struct StatedDateRange: Equatable {
     let deadline: Date
 }
 
-struct TaskTextConstraints {
+nonisolated struct ExplicitTaskFacts: Equatable {
+    var startDate: Date?
+    var deadline: Date?
+    var durationMinutes: Int?
+    var priority: TaskPriority?
+    var preferredTimeOfDay: String?
+    var isFixed: Bool?
+    var requiresBusinessHours = false
+}
+
+nonisolated struct TaskTextConstraints {
+    nonisolated static func explicitFacts(
+        in text: String,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> ExplicitTaskFacts {
+        var facts = ExplicitTaskFacts()
+
+        if let range = dateRange(in: text, now: now, calendar: calendar) {
+            facts.startDate = range.earliestStart
+            facts.deadline = range.deadline
+        }
+
+        for detected in statedDates(in: text) {
+            if detected.isDeadline {
+                if facts.deadline == nil {
+                    facts.deadline = detected.date
+                }
+            } else if facts.startDate == nil {
+                facts.startDate = detected.date
+            }
+        }
+
+        if let clockRange = taskClockRange(in: text),
+           let day = statedDay(in: text, now: now, calendar: calendar),
+           let start = date(on: day, clock: clockRange.start, calendar: calendar),
+           var end = date(on: day, clock: clockRange.end, calendar: calendar) {
+            if end <= start {
+                end = calendar.date(byAdding: .day, value: 1, to: end) ?? end
+            }
+            facts.startDate = start
+            facts.deadline = end
+            facts.durationMinutes = max(
+                1,
+                Int(end.timeIntervalSince(start) / 60)
+            )
+            facts.isFixed = true
+        }
+
+        if facts.durationMinutes == nil {
+            facts.durationMinutes = statedDuration(in: text)
+        }
+
+        facts.priority = statedPriority(in: text)
+        facts.preferredTimeOfDay = statedPreferredTime(in: text)
+        facts.requiresBusinessHours = mentionsBusinessHours(in: text)
+
+        if explicitlyAllowsReflow(in: text) {
+            facts.isFixed = false
+        } else if explicitlyPreventsReflow(in: text)
+                    || impliesFixedCommitment(in: text) {
+            facts.isFixed = true
+        }
+
+        return facts
+    }
+
     nonisolated static func dateRange(
         in text: String,
         now: Date,
@@ -127,7 +195,21 @@ struct TaskTextConstraints {
 
     nonisolated static func hasExplicitTimeOfDay(in text: String) -> Bool {
         text.range(
-            of: #"(?i)\b(morning|afternoon|evening|night|noon|midnight|a\.?m\.?|p\.?m\.?)\b"#,
+            of: #"(?i)\b(morning|afternoon|evening|night)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    nonisolated static func mentionsTiming(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|morning|afternoon|evening|night|noon|midnight|deadline|due|before|after|earliest|at\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    nonisolated static func mentionsDeadline(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(deadline|due|by|before|until|through|last\s+day|ends?)\b"#,
             options: .regularExpression
         ) != nil
     }
@@ -180,6 +262,257 @@ struct TaskTextConstraints {
             ? nil
             : Int(source.substring(with: yearRange))
         return (monthIndex + 1, day, year)
+    }
+
+    private struct Clock {
+        let hour: Int
+        let minute: Int
+    }
+
+    private static func taskClockRange(
+        in text: String
+    ) -> (start: Clock, end: Clock)? {
+        let pattern = #"(?i)\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\s*(?:to|through|until|[-–—])\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+              ) else {
+            return nil
+        }
+
+        let prefixLength = min(match.range.location, 45)
+        let prefixRange = NSRange(
+            location: match.range.location - prefixLength,
+            length: prefixLength
+        )
+        let prefix = (text as NSString).substring(with: prefixRange)
+        if prefix.range(
+            of: #"(?i)\b(open|opens|hours?|closes?)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return nil
+        }
+
+        let source = text as NSString
+        guard let firstHour = intCapture(1, match: match, source: source),
+              let secondHour = intCapture(4, match: match, source: source) else {
+            return nil
+        }
+        let firstMinute = intCapture(2, match: match, source: source) ?? 0
+        let secondMinute = intCapture(5, match: match, source: source) ?? 0
+        let firstMarker = stringCapture(3, match: match, source: source)
+        let secondMarker = stringCapture(6, match: match, source: source)
+        guard let end = normalizedClock(
+            hour: secondHour,
+            minute: secondMinute,
+            marker: secondMarker
+        ) else {
+            return nil
+        }
+
+        var inferredFirstMarker = firstMarker
+        if inferredFirstMarker == nil {
+            inferredFirstMarker = secondMarker
+            if secondMarker?.lowercased().contains("p") == true,
+               firstHour > secondHour {
+                inferredFirstMarker = "am"
+            }
+        }
+        guard let start = normalizedClock(
+            hour: firstHour,
+            minute: firstMinute,
+            marker: inferredFirstMarker
+        ) else {
+            return nil
+        }
+        return (start, end)
+    }
+
+    private static func statedDay(
+        in text: String,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        if text.range(of: #"(?i)\btomorrow\b"#, options: .regularExpression) != nil {
+            return calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: calendar.startOfDay(for: now)
+            )
+        }
+        if text.range(
+            of: #"(?i)\b(today|tonight)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return calendar.startOfDay(for: now)
+        }
+
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.date.rawValue
+        ) else {
+            return nil
+        }
+        let matches = detector.matches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text)
+        )
+        return matches.compactMap(\.date).first
+    }
+
+    private static func statedDuration(in text: String) -> Int? {
+        let patterns = [
+            #"(?i)\b(?:takes?|for|duration(?:\s+of)?|lasts?)\s*(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)\b"#,
+            #"(?i)\b(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)\b"#
+        ]
+        var match: NSTextCheckingResult?
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else {
+                continue
+            }
+            if let candidate = regex.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+            ) {
+                match = candidate
+                break
+            }
+        }
+        guard let match else { return nil }
+        let source = text as NSString
+        guard let amountText = stringCapture(1, match: match, source: source),
+              let amount = Double(amountText),
+              let unit = stringCapture(2, match: match, source: source) else {
+            return nil
+        }
+        return Int((unit.lowercased().hasPrefix("h") ? amount * 60 : amount).rounded())
+    }
+
+    private static func statedDates(
+        in text: String
+    ) -> [(date: Date, isDeadline: Bool)] {
+        guard mentionsTiming(in: text),
+              let detector = try? NSDataDetector(
+                types: NSTextCheckingResult.CheckingType.date.rawValue
+              ) else {
+            return []
+        }
+        let source = text as NSString
+        return detector.matches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text)
+        ).compactMap { match in
+            guard let date = match.date else { return nil }
+            let matchedText = source.substring(with: match.range)
+            if matchedText.range(
+                of: #"(?i)^\s*\d+(?:\.\d+)?\s*(?:minutes?|mins?|hours?|hrs?)\s*$"#,
+                options: .regularExpression
+            ) != nil {
+                return nil
+            }
+
+            let prefixLength = min(match.range.location, 35)
+            let contextRange = NSRange(
+                location: match.range.location - prefixLength,
+                length: prefixLength + match.range.length
+            )
+            let context = source.substring(with: contextRange)
+            let isDeadline = context.range(
+                of: #"(?i)\b(deadline|due|by|before|until|through|last\s+day|ends?)\b"#,
+                options: .regularExpression
+            ) != nil
+            return (date, isDeadline)
+        }
+    }
+
+    private static func statedPriority(in text: String) -> TaskPriority? {
+        if text.range(
+            of: #"(?i)\b(high|urgent)\s+priority\b|\burgent\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .high
+        }
+        if text.range(
+            of: #"(?i)\bmedium\s+priority\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .medium
+        }
+        if text.range(
+            of: #"(?i)\blow\s+priority\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .low
+        }
+        return nil
+    }
+
+    private static func statedPreferredTime(in text: String) -> String? {
+        for label in ["Morning", "Afternoon", "Evening", "Night"] {
+            if text.range(
+                of: "\\b\(label.lowercased())\\b",
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil {
+                return label
+            }
+        }
+        return nil
+    }
+
+    private static func mentionsBusinessHours(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(open|opens|opening|closes?|business\s+hours|24\s*hours?)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func date(
+        on day: Date,
+        clock: Clock,
+        calendar: Calendar
+    ) -> Date? {
+        calendar.date(
+            bySettingHour: clock.hour,
+            minute: clock.minute,
+            second: 0,
+            of: day
+        )
+    }
+
+    private static func normalizedClock(
+        hour: Int,
+        minute: Int,
+        marker: String?
+    ) -> Clock? {
+        guard (0...59).contains(minute) else { return nil }
+        if let marker {
+            guard (1...12).contains(hour) else { return nil }
+            let isPM = marker.lowercased().contains("p")
+            return Clock(
+                hour: (hour % 12) + (isPM ? 12 : 0),
+                minute: minute
+            )
+        }
+        guard (0...23).contains(hour) else { return nil }
+        return Clock(hour: hour, minute: minute)
+    }
+
+    private static func intCapture(
+        _ index: Int,
+        match: NSTextCheckingResult,
+        source: NSString
+    ) -> Int? {
+        stringCapture(index, match: match, source: source).flatMap(Int.init)
+    }
+
+    private static func stringCapture(
+        _ index: Int,
+        match: NSTextCheckingResult,
+        source: NSString
+    ) -> String? {
+        let range = match.range(at: index)
+        guard range.location != NSNotFound else { return nil }
+        return source.substring(with: range)
     }
 }
 
@@ -296,6 +629,10 @@ final class TaskInterpreter {
         )
 
         let details = response.content
+        let explicit = TaskTextConstraints.explicitFacts(
+            in: description,
+            now: now
+        )
         let statedRange = TaskTextConstraints.dateRange(
             in: description,
             now: now
@@ -306,32 +643,36 @@ final class TaskInterpreter {
             || (!location.isEmpty && category == .errand)
             ? .destination
             : .anywhere
-        let isFixed: Bool
-        if TaskTextConstraints.explicitlyAllowsReflow(in: description) {
-            isFixed = false
-        } else {
-            isFixed = details.isFixed
-                || TaskTextConstraints.explicitlyPreventsReflow(in: description)
-                || TaskTextConstraints.impliesFixedCommitment(in: description)
-        }
+        let isFixed = explicit.isFixed ?? details.isFixed
+        let modelStart = TaskTextConstraints.mentionsTiming(in: description)
+            ? parseISO8601(details.earliestStartISO8601)
+            : nil
+        let modelDeadline = TaskTextConstraints.mentionsDeadline(in: description)
+            ? parseISO8601(details.deadlineISO8601)
+            : nil
+        let startDate = explicit.startDate ?? statedRange?.earliestStart ?? modelStart
+        let deadline = explicit.deadline ?? statedRange?.deadline ?? modelDeadline
 
         return InterpretedTaskDraft(
             title: shortTitle(details.title),
-            durationMinutes: details.durationMinutes,
-            durationSource: details.durationWasExplicit ? .explicit : .modelInferred,
-            startDate: statedRange?.earliestStart
-                ?? parseISO8601(details.earliestStartISO8601),
+            durationMinutes: explicit.durationMinutes ?? details.durationMinutes,
+            durationSource: explicit.durationMinutes == nil ? .modelInferred : .explicit,
+            startDate: startDate,
+            startSource: explicit.startDate == nil && statedRange == nil
+                ? (modelStart == nil ? .unknown : .modelInferred)
+                : .explicit,
             category: category,
-            deadline: statedRange?.deadline
-                ?? parseISO8601(details.deadlineISO8601),
-            priority: map(details.priority),
+            deadline: deadline,
+            deadlineSource: explicit.deadline == nil && statedRange == nil
+                ? (modelDeadline == nil ? .unknown : .modelInferred)
+                : .explicit,
+            priority: explicit.priority ?? map(details.priority),
             destinationQuery: location,
             placeRequirement: placeRequirement,
-            preferredTimeOfDay: TaskTextConstraints.hasExplicitTimeOfDay(in: description)
-                ? label(details.preferredTimeOfDay)
-                : "",
+            preferredTimeOfDay: explicit.preferredTimeOfDay ?? "",
             isFixed: isFixed,
-            requiresBusinessHours: details.needsBusinessHoursLookup
+            requiresBusinessHours: explicit.requiresBusinessHours
+                || details.needsBusinessHoursLookup
         )
     }
 
