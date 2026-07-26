@@ -7,11 +7,35 @@
 
 import EventKit
 
+enum TaskCategory: String, CaseIterable, Identifiable {
+    case none = "None"
+    case errand = "Errand"
+    case work = "Work"
+    case personal = "Personal"
+    case health = "Health"
+
+    var id: Self { self }
+}
+
+enum TaskPriority: String, CaseIterable, Identifiable {
+    case none = "None"
+    case low = "Low"
+    case medium = "Medium"
+    case high = "High"
+
+    var id: Self { self }
+}
+
 struct DynocalTask: Identifiable, Hashable {
     let id: String
     let title: String
     let startDate: Date
     let endDate: Date
+    let category: TaskCategory
+    let travelTimeMinutes: Int
+    let deadline: Date?
+    let priority: TaskPriority
+    let location: String
 
     var durationMinutes: Int {
         Int(endDate.timeIntervalSince(startDate) / 60)
@@ -39,6 +63,7 @@ struct DeletedTask {
     let startDate: Date
     let endDate: Date
     let notes: String?
+    let location: String?
 }
 
 final class CalendarService {
@@ -74,7 +99,16 @@ final class CalendarService {
         }
     }
 
-    func addTask(title: String, startDate: Date, durationMinutes: Int) throws -> DynocalTask {
+    func addTask(
+        title: String,
+        startDate: Date,
+        durationMinutes: Int,
+        category: TaskCategory,
+        travelTimeMinutes: Int,
+        deadline: Date?,
+        priority: TaskPriority,
+        location: String
+    ) throws -> DynocalTask {
         let calendar = try dynocalCalendar()
 
         let endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
@@ -84,36 +118,50 @@ final class CalendarService {
         event.startDate = startDate
         event.endDate = endDate
         event.calendar = calendar
+        event.location = location
         event.alarms = []
-        event.notes = dynocalNotes(durationMinutes: durationMinutes)
+        event.notes = dynocalNotes(
+            durationMinutes: durationMinutes,
+            category: category,
+            travelTimeMinutes: travelTimeMinutes,
+            deadline: deadline,
+            priority: priority
+        )
 
         try store.save(event, span: .thisEvent, commit: true)
 
-        return DynocalTask(
-            id: event.eventIdentifier,
-            title: event.title,
-            startDate: event.startDate,
-            endDate: event.endDate
-        )
+        return task(from: event)
     }
 
-    func updateTask(id: String, title: String, startDate: Date, durationMinutes: Int) throws -> DynocalTask {
+    func updateTask(
+        id: String,
+        title: String,
+        startDate: Date,
+        durationMinutes: Int,
+        category: TaskCategory,
+        travelTimeMinutes: Int,
+        deadline: Date?,
+        priority: TaskPriority,
+        location: String
+    ) throws -> DynocalTask {
         let event = try dynocalEvent(id: id)
 
         event.title = title
         event.startDate = startDate
         event.endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
-        event.notes = dynocalNotes(durationMinutes: durationMinutes)
+        event.location = location
+        event.notes = dynocalNotes(
+            durationMinutes: durationMinutes,
+            category: category,
+            travelTimeMinutes: travelTimeMinutes,
+            deadline: deadline,
+            priority: priority
+        )
         event.alarms = []
 
         try store.save(event, span: .thisEvent, commit: true)
 
-        return DynocalTask(
-            id: event.eventIdentifier,
-            title: event.title,
-            startDate: event.startDate,
-            endDate: event.endDate
-        )
+        return task(from: event)
     }
 
     func tasks() throws -> [DynocalTask] {
@@ -131,14 +179,7 @@ final class CalendarService {
             .filter { isDynocalEvent($0) }
             .filter { !$0.isAllDay }
             .sorted { $0.startDate < $1.startDate }
-            .map { event in
-                DynocalTask(
-                    id: event.eventIdentifier,
-                    title: event.title,
-                    startDate: event.startDate,
-                    endDate: event.endDate
-                )
-            }
+            .map(task(from:))
     }
 
     func completeTask(id: String) throws -> DeletedTask {
@@ -147,7 +188,8 @@ final class CalendarService {
             title: event.title,
             startDate: event.startDate,
             endDate: event.endDate,
-            notes: event.notes
+            notes: event.notes,
+            location: event.location
         )
 
         try store.remove(event, span: .thisEvent, commit: true)
@@ -162,19 +204,19 @@ final class CalendarService {
         event.startDate = deletedTask.startDate
         event.endDate = deletedTask.endDate
         event.calendar = calendar
+        event.location = deletedTask.location
         event.alarms = []
         event.notes = deletedTask.notes ?? dynocalNotes(
-            durationMinutes: Int(deletedTask.endDate.timeIntervalSince(deletedTask.startDate) / 60)
+            durationMinutes: Int(deletedTask.endDate.timeIntervalSince(deletedTask.startDate) / 60),
+            category: .none,
+            travelTimeMinutes: 0,
+            deadline: nil,
+            priority: .none
         )
 
         try store.save(event, span: .thisEvent, commit: true)
 
-        return DynocalTask(
-            id: event.eventIdentifier,
-            title: event.title,
-            startDate: event.startDate,
-            endDate: event.endDate
-        )
+        return task(from: event)
     }
 
     func snoozeTask(id: String, by minutes: Int) throws -> SnoozeResult {
@@ -195,12 +237,7 @@ final class CalendarService {
 
         try store.save(event, span: .thisEvent, commit: true)
 
-        let updatedTask = DynocalTask(
-            id: event.eventIdentifier,
-            title: event.title,
-            startDate: event.startDate,
-            endDate: event.endDate
-        )
+        let updatedTask = task(from: event)
 
         return SnoozeResult(
             updatedTask: updatedTask,
@@ -235,12 +272,7 @@ final class CalendarService {
 
             try store.save(event, span: .thisEvent, commit: true)
 
-            let updatedTask = DynocalTask(
-                id: event.eventIdentifier,
-                title: event.title,
-                startDate: event.startDate,
-                endDate: event.endDate
-            )
+            let updatedTask = self.task(from: event)
 
             updatedTasks.append(updatedTask)
             nextCandidateDate = updatedTask.endDate
@@ -379,18 +411,53 @@ final class CalendarService {
         return calendar.date(byAdding: .minute, value: 5 - remainder, to: roundedDate) ?? date
     }
 
-    private func dynocalNotes(durationMinutes: Int) -> String {
-        """
+    private func dynocalNotes(
+        durationMinutes: Int,
+        category: TaskCategory,
+        travelTimeMinutes: Int,
+        deadline: Date?,
+        priority: TaskPriority
+    ) -> String {
+        let deadlineTimestamp = deadline.map { String($0.timeIntervalSince1970) } ?? "none"
+
+        return """
         Created by Dynocal
 
         DYNOCAL_META_START
-        version: 1
+        version: 2
         itemType: task
         scheduleType: movable
-        category: none
+        category: \(category.rawValue)
         durationMinutes: \(durationMinutes)
+        travelTimeMinutes: \(travelTimeMinutes)
+        deadlineTimestamp: \(deadlineTimestamp)
+        priority: \(priority.rawValue)
         DYNOCAL_META_END
         """
+    }
+
+    private func task(from event: EKEvent) -> DynocalTask {
+        let category = metadataValue("category", in: event.notes)
+            .flatMap(TaskCategory.init(rawValue:)) ?? .none
+        let travelTimeMinutes = metadataValue("travelTimeMinutes", in: event.notes)
+            .flatMap(Int.init) ?? 0
+        let deadline = metadataValue("deadlineTimestamp", in: event.notes)
+            .flatMap(TimeInterval.init)
+            .map(Date.init(timeIntervalSince1970:))
+        let priority = metadataValue("priority", in: event.notes)
+            .flatMap(TaskPriority.init(rawValue:)) ?? .none
+
+        return DynocalTask(
+            id: event.eventIdentifier,
+            title: event.title,
+            startDate: event.startDate,
+            endDate: event.endDate,
+            category: category,
+            travelTimeMinutes: travelTimeMinutes,
+            deadline: deadline,
+            priority: priority,
+            location: event.location ?? ""
+        )
     }
 
     private func isDynocalEvent(_ event: EKEvent) -> Bool {

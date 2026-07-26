@@ -26,6 +26,12 @@ struct ContentView: View {
     @State private var newTaskTitle = ""
     @State private var newTaskStartDate = Self.defaultTaskStartDate()
     @State private var newTaskDurationMinutes = 30
+    @State private var newTaskCategory = TaskCategory.none
+    @State private var newTaskTravelTimeMinutes = 0
+    @State private var newTaskHasDeadline = false
+    @State private var newTaskDeadline = Self.defaultTaskStartDate()
+    @State private var newTaskPriority = TaskPriority.none
+    @State private var newTaskLocation = ""
 
     var body: some View {
         NavigationStack {
@@ -50,7 +56,10 @@ struct ContentView: View {
                 }
 
                 if hasCalendarAccess {
-                    PButton(isProcessing: isRescheduling) {
+                    PButton(
+                        isProcessing: isRescheduling,
+                        overdueTaskCount: overdueTaskCount
+                    ) {
                         rescheduleOverdueTasks()
                     }
                     .padding(.bottom, 16)
@@ -165,9 +174,7 @@ struct ContentView: View {
     private var newTaskSheet: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("What do you need to do?", text: $newTaskTitle)
-
+                Section("Schedule") {
                     DatePicker(
                         "When",
                         selection: $newTaskStartDate,
@@ -175,10 +182,67 @@ struct ContentView: View {
                     )
 
                     Picker("Duration", selection: $newTaskDurationMinutes) {
+                        Text("15m").tag(15)
                         Text("30 min").tag(30)
+                        Text("45m").tag(45)
+                        Text("1 hr").tag(60)
+                        Text("90m").tag(90)
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Section("What do you need to do?") {
+                    ZStack(alignment: .topLeading) {
+                        if newTaskTitle.isEmpty {
+                            Text("Describe the task...")
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+
+                        TextEditor(text: $newTaskTitle)
+                            .frame(minHeight: 120)
+                            .scrollContentBackground(.hidden)
+                    }
+                }
+
+                Section {
+                    Picker("Category", selection: $newTaskCategory) {
+                        ForEach(TaskCategory.allCases) { category in
+                            Text(category.rawValue).tag(category)
+                        }
+                    }
+
+                    Picker("Travel Time", selection: $newTaskTravelTimeMinutes) {
+                        Text("None").tag(0)
+                        Text("15 min").tag(15)
+                        Text("30 min").tag(30)
+                        Text("45 min").tag(45)
                         Text("1 hr").tag(60)
                     }
-                    .pickerStyle(.segmented)
+
+                    TextField("Location", text: $newTaskLocation)
+
+                    Toggle("Deadline", isOn: $newTaskHasDeadline)
+
+                    if newTaskHasDeadline {
+                        DatePicker(
+                            "Due",
+                            selection: $newTaskDeadline,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                    }
+
+                    Picker("Priority", selection: $newTaskPriority) {
+                        ForEach(TaskPriority.allCases) { priority in
+                            Text(priority.rawValue).tag(priority)
+                        }
+                    }
+                } header: {
+                    Text("Optional")
+                } footer: {
+                    Text("These details are saved with the task. Smarter scheduling rules can use them later.")
                 }
             }
             .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
@@ -246,11 +310,21 @@ struct ContentView: View {
             && !isCreatingTask
     }
 
+    private var overdueTaskCount: Int {
+        tasks.filter { $0.startDate < Date() }.count
+    }
+
     private func beginNewTask() {
         editingTask = nil
         newTaskTitle = ""
         newTaskStartDate = Self.defaultTaskStartDate()
         newTaskDurationMinutes = 30
+        newTaskCategory = .none
+        newTaskTravelTimeMinutes = 0
+        newTaskHasDeadline = false
+        newTaskDeadline = newTaskStartDate
+        newTaskPriority = .none
+        newTaskLocation = ""
         isShowingNewTaskSheet = true
     }
 
@@ -259,6 +333,12 @@ struct ContentView: View {
         newTaskTitle = task.title
         newTaskStartDate = task.startDate
         newTaskDurationMinutes = task.durationMinutes
+        newTaskCategory = task.category
+        newTaskTravelTimeMinutes = task.travelTimeMinutes
+        newTaskHasDeadline = task.deadline != nil
+        newTaskDeadline = task.deadline ?? task.startDate
+        newTaskPriority = task.priority
+        newTaskLocation = task.location
         isShowingNewTaskSheet = true
     }
 
@@ -302,13 +382,23 @@ struct ContentView: View {
                     id: editingTask.id,
                     title: trimmedTitle,
                     startDate: newTaskStartDate,
-                    durationMinutes: newTaskDurationMinutes
+                    durationMinutes: newTaskDurationMinutes,
+                    category: newTaskCategory,
+                    travelTimeMinutes: newTaskTravelTimeMinutes,
+                    deadline: newTaskHasDeadline ? newTaskDeadline : nil,
+                    priority: newTaskPriority,
+                    location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             } else {
                 savedTask = try calendarService.addTask(
                     title: trimmedTitle,
                     startDate: newTaskStartDate,
-                    durationMinutes: newTaskDurationMinutes
+                    durationMinutes: newTaskDurationMinutes,
+                    category: newTaskCategory,
+                    travelTimeMinutes: newTaskTravelTimeMinutes,
+                    deadline: newTaskHasDeadline ? newTaskDeadline : nil,
+                    priority: newTaskPriority,
+                    location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
 
@@ -399,22 +489,27 @@ struct ContentView: View {
         isRescheduling = true
         statusText = "Finding room for overdue tasks..."
 
-        do {
-            let result = try calendarService.rescheduleOverdueTasks()
-            refreshTasks()
+        Task {
+            await Task.yield()
 
-            if result.updatedTasks.isEmpty {
-                statusText = "You’re caught up — there are no overdue tasks."
-            } else if result.skippedConflicts {
-                statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
-            } else {
-                statusText = "Reflowed \(result.updatedTasks.count) overdue task(s)."
+            do {
+                let result = try calendarService.rescheduleOverdueTasks()
+                refreshTasks()
+
+                if result.updatedTasks.isEmpty {
+                    statusText = "You’re caught up — there are no overdue tasks."
+                } else if result.skippedConflicts {
+                    statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
+                } else {
+                    statusText = "Reflowed \(result.updatedTasks.count) overdue task(s)."
+                }
+            } catch {
+                statusText = "Could not reflow tasks: \(error.localizedDescription)"
             }
-        } catch {
-            statusText = "Could not reflow tasks: \(error.localizedDescription)"
-        }
 
-        isRescheduling = false
+            try? await Task.sleep(for: .milliseconds(450))
+            isRescheduling = false
+        }
     }
 
     private static func defaultTaskStartDate() -> Date {
@@ -449,13 +544,13 @@ struct ContentView: View {
 
 private struct PButton: View {
     let isProcessing: Bool
+    let overdueTaskCount: Int
     let action: () -> Void
 
     private let buttonColor = Color(uiColor: .systemBlue)
 
     @State private var holdProgress = 0.0
     @State private var isHolding = false
-    @State private var holdStartAngle = 0.0
     @State private var didConfirm = false
     @State private var orbitStartedAt = Date()
 
@@ -465,49 +560,32 @@ private struct PButton: View {
     var body: some View {
         VStack(spacing: 8) {
             TimelineView(.animation) { timeline in
-                let idleAngle = orbitAngle(at: timeline.date)
-                let dotAngle = isHolding
-                    ? holdStartAngle + (holdProgress * 360)
-                    : idleAngle
+                let dotAngle = orbitAngle(at: timeline.date)
 
                 ZStack {
                     Circle()
-                        .trim(from: 0, to: holdProgress)
-                        .stroke(
-                            buttonColor,
-                            style: StrokeStyle(lineWidth: 7, lineCap: .round)
-                        )
-                        .frame(width: 92, height: 92)
-                        .rotationEffect(.degrees(holdStartAngle - 90))
-                        .opacity(isHolding || isProcessing ? 1 : 0)
-
-                    Circle()
                         .fill(buttonColor)
-                        .frame(width: 10, height: 10)
-                        .offset(y: -46)
+                        .frame(width: 9, height: 9)
+                        .offset(y: -40)
                         .rotationEffect(.degrees(dotAngle))
                         .opacity(isProcessing ? 0.35 : 0.9)
 
                     Circle()
                         .fill(buttonColor)
-                        .frame(width: 78, height: 78)
+                        .frame(width: 68, height: 68)
                         .shadow(color: buttonColor.opacity(0.3), radius: 12, y: 5)
 
-                    if isProcessing {
-                        ProgressView()
-                            .tint(.white)
-                            .controlSize(.large)
-                    } else if didConfirm {
-                        Image(systemName: "checkmark")
-                            .symbolRenderingMode(.monochrome)
-                            .transition(.scale(scale: 0.82).combined(with: .opacity))
-                    } else {
-                        Text("P")
-                            .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    if isHolding || didConfirm || isProcessing {
+                        ReflowCheckmark()
+                            .trim(from: 0, to: didConfirm || isProcessing ? 1 : holdProgress)
+                            .stroke(
+                                .white,
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                            )
+                            .frame(width: 30, height: 24)
                     }
                 }
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .frame(width: 86, height: 86)
                 .animation(.easeOut(duration: 0.18), value: didConfirm)
             }
             .contentShape(Circle())
@@ -519,23 +597,41 @@ private struct PButton: View {
             )
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Reschedule overdue tasks")
+            .accessibilityValue("\(overdueTaskCount) overdue")
             .accessibilityHint("Press and hold to confirm. Release early to cancel.")
             .accessibilityAddTraits(.isButton)
-            .allowsHitTesting(!isProcessing)
+            .allowsHitTesting(!isProcessing && overdueTaskCount > 0)
+            .onChange(of: isProcessing) { wasProcessing, isNowProcessing in
+                guard wasProcessing, !isNowProcessing else { return }
 
-            Text(isProcessing ? "Reflowing..." : "Hold to reflow")
+                Task {
+                    try? await Task.sleep(for: .milliseconds(500))
+
+                    await MainActor.run {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            didConfirm = false
+                            holdProgress = 0
+                        }
+                    }
+                }
+            }
+
+            Text(
+                isProcessing
+                    ? "Reflowing..."
+                    : (overdueTaskCount == 0 ? "All caught up" : "Hold to reflow")
+            )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
     }
 
     private func handlePressing(_ isPressing: Bool) {
-        guard !isProcessing else { return }
+        guard !isProcessing, overdueTaskCount > 0 else { return }
 
         if isPressing {
             didConfirm = false
             holdProgress = 0
-            holdStartAngle = orbitAngle(at: Date())
             isHolding = true
 
             withAnimation(.linear(duration: holdDuration)) {
@@ -550,27 +646,26 @@ private struct PButton: View {
     }
 
     private func confirm() {
-        guard !isProcessing else { return }
+        guard !isProcessing, overdueTaskCount > 0 else { return }
 
         didConfirm = true
         holdProgress = 1
+        isHolding = false
         action()
-
-        Task {
-            try? await Task.sleep(for: .milliseconds(650))
-
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    didConfirm = false
-                    holdProgress = 0
-                }
-                isHolding = false
-            }
-        }
     }
 
     private func orbitAngle(at date: Date) -> Double {
         date.timeIntervalSince(orbitStartedAt)
             .truncatingRemainder(dividingBy: orbitDuration) / orbitDuration * 360
+    }
+}
+
+private struct ReflowCheckmark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.38, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
     }
 }
