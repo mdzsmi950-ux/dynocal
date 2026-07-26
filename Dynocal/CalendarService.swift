@@ -63,6 +63,7 @@ struct DynocalTask: Identifiable, Hashable {
     let deadline: Date?
     let priority: TaskPriority
     let location: String
+    let isMovable: Bool
     let reflowCount: Int
     let manualOrder: Int?
 
@@ -139,6 +140,11 @@ private struct PlacementResult {
     let skippedConflict: Bool
 }
 
+private struct BlockedInterval {
+    let start: Date
+    let end: Date
+}
+
 struct DeletedTask {
     let title: String
     let startDate: Date
@@ -189,15 +195,35 @@ final class CalendarService {
         travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
-        location: String
+        location: String,
+        isMovable: Bool
     ) throws -> DynocalTask {
         let calendar = try dynocalCalendar()
 
-        let endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
+        let taskDuration = TimeInterval(durationMinutes * 60)
+        let travelDuration = TimeInterval(travelTimeMinutes * 60)
+        let placedStartDate: Date
+
+        if isMovable {
+            let placement = nextOpenStartDate(
+                from: startDate,
+                duration: taskDuration + travelDuration,
+                category: category,
+                excludingEventIDs: []
+            )
+            placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
+        } else {
+            placedStartDate = startDate
+        }
+        let endDate = placedStartDate.addingTimeInterval(taskDuration)
+
+        if let deadline, endDate > deadline {
+            throw CalendarServiceError.noRoomBeforeDeadline
+        }
 
         let event = EKEvent(eventStore: store)
         event.title = title
-        event.startDate = startDate
+        event.startDate = placedStartDate
         event.endDate = endDate
         event.calendar = calendar
         event.location = location
@@ -208,7 +234,8 @@ final class CalendarService {
             category: category,
             travelTimeMinutes: travelTimeMinutes,
             deadline: deadline,
-            priority: priority
+            priority: priority,
+            isMovable: isMovable
         )
 
         try store.save(event, span: .thisEvent, commit: true)
@@ -226,14 +253,36 @@ final class CalendarService {
         travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
-        location: String
+        location: String,
+        isMovable: Bool
     ) throws -> DynocalTask {
         let event = try dynocalEvent(id: id)
         let existingTask = task(from: event)
 
         event.title = title
-        event.startDate = startDate
-        event.endDate = startDate.addingTimeInterval(TimeInterval(durationMinutes * 60))
+        let taskDuration = TimeInterval(durationMinutes * 60)
+        let travelDuration = TimeInterval(travelTimeMinutes * 60)
+        let placedStartDate: Date
+
+        if isMovable {
+            let placement = nextOpenStartDate(
+                from: startDate,
+                duration: taskDuration + travelDuration,
+                category: category,
+                excludingEventIDs: [id]
+            )
+            placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
+        } else {
+            placedStartDate = startDate
+        }
+        let placedEndDate = placedStartDate.addingTimeInterval(taskDuration)
+
+        if let deadline, placedEndDate > deadline {
+            throw CalendarServiceError.noRoomBeforeDeadline
+        }
+
+        event.startDate = placedStartDate
+        event.endDate = placedEndDate
         event.location = location
         event.notes = dynocalNotes(
             taskDescription: description,
@@ -242,6 +291,7 @@ final class CalendarService {
             travelTimeMinutes: travelTimeMinutes,
             deadline: deadline,
             priority: priority,
+            isMovable: isMovable,
             reflowCount: existingTask.reflowCount,
             manualOrder: existingTask.manualOrder
         )
@@ -311,7 +361,7 @@ final class CalendarService {
     func rescheduleOverdueTasks() throws -> RescheduleResult {
         let now = Date()
         let overdueTasks = try tasks()
-            .filter { $0.startDate < now }
+            .filter { $0.startDate < now && $0.isMovable }
             .sorted(by: DynocalTask.isOrderedBefore)
 
         var updatedTasks: [DynocalTask] = []
@@ -322,14 +372,20 @@ final class CalendarService {
         for task in overdueTasks {
             let event = try dynocalEvent(id: task.id)
             let duration = storedDuration(for: event)
+            let travelDuration = TimeInterval(task.travelTimeMinutes * 60)
             let placement = nextOpenStartDate(
                 from: nextCandidateDate,
-                duration: duration,
+                duration: duration + travelDuration,
+                category: task.category,
                 excludingEventIDs: overdueTaskIDs
             )
 
-            event.endDate = placement.newStartDate.addingTimeInterval(duration)
-            event.startDate = placement.newStartDate
+            event.startDate = placement.newStartDate.addingTimeInterval(travelDuration)
+            event.endDate = event.startDate.addingTimeInterval(duration)
+
+            if let deadline = task.deadline, event.endDate > deadline {
+                throw CalendarServiceError.noRoomBeforeDeadline
+            }
             event.alarms = []
             event.notes = dynocalNotes(
                 taskDescription: task.taskDescription,
@@ -338,6 +394,7 @@ final class CalendarService {
                 travelTimeMinutes: task.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                isMovable: task.isMovable,
                 reflowCount: task.reflowCount + 1,
                 manualOrder: task.manualOrder
             )
@@ -369,6 +426,7 @@ final class CalendarService {
                 travelTimeMinutes: task.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
                 manualOrder: order
             )
@@ -391,6 +449,7 @@ final class CalendarService {
                 travelTimeMinutes: task.travelTimeMinutes,
                 deadline: task.deadline,
                 priority: task.priority,
+                isMovable: task.isMovable,
                 reflowCount: task.reflowCount,
                 manualOrder: nil
             )
@@ -464,13 +523,14 @@ final class CalendarService {
     private func nextOpenStartDate(
         from targetStartDate: Date,
         duration: TimeInterval,
+        category: TaskCategory,
         excludingEventIDs: Set<String>
     ) -> PlacementResult {
         let searchEndDate = Calendar.current.date(byAdding: .day, value: 7, to: targetStartDate)
             ?? targetStartDate.addingTimeInterval(7 * 24 * 60 * 60)
         let calendars = store.calendars(for: .event)
         let predicate = store.predicateForEvents(withStart: targetStartDate, end: searchEndDate, calendars: calendars)
-        let busyEvents = store.events(matching: predicate)
+        let eventIntervals = store.events(matching: predicate)
             .filter { event in
                 let isExcluded = event.eventIdentifier.map(excludingEventIDs.contains) ?? false
 
@@ -478,17 +538,25 @@ final class CalendarService {
                     && !event.isAllDay
                     && event.availability != .free
             }
-            .sorted { $0.startDate < $1.startDate }
+            .compactMap { event -> BlockedInterval? in
+                guard let start = event.startDate, let end = event.endDate else { return nil }
+                return BlockedInterval(start: start, end: end)
+            }
+        let blockedIntervals = (
+            eventIntervals + lifestyleBlockedIntervals(
+                from: targetStartDate,
+                through: searchEndDate,
+                category: category
+            )
+        )
+        .sorted { $0.start < $1.start }
 
         var candidateStartDate = roundedUpToNextFiveMinutes(targetStartDate)
         let firstCandidateStartDate = candidateStartDate
 
-        for busyEvent in busyEvents {
-            guard let busyStartDate = busyEvent.startDate,
-                  let busyEndDate = busyEvent.endDate else {
-                continue
-            }
-
+        for interval in blockedIntervals {
+            let busyStartDate = interval.start
+            let busyEndDate = interval.end
             let candidateEndDate = candidateStartDate.addingTimeInterval(duration)
 
             if candidateEndDate <= busyStartDate {
@@ -506,6 +574,58 @@ final class CalendarService {
         return PlacementResult(
             newStartDate: candidateStartDate,
             skippedConflict: candidateStartDate > firstCandidateStartDate
+        )
+    }
+
+    private func lifestyleBlockedIntervals(
+        from startDate: Date,
+        through endDate: Date,
+        category: TaskCategory
+    ) -> [BlockedInterval] {
+        let profile = PreferencesStore.shared.profile
+        let calendar = Calendar.current
+        let startOfTargetDay = calendar.startOfDay(for: startDate)
+        let firstDay = calendar.date(byAdding: .day, value: -1, to: startOfTargetDay)
+            ?? startOfTargetDay
+        var intervals: [BlockedInterval] = []
+        var day = firstDay
+
+        while day < endDate {
+            let weekday = calendar.component(.weekday, from: day)
+
+            if profile.protectWorkHours,
+               category != .work,
+               profile.workDays.contains(weekday),
+               let start = date(on: day, minutes: profile.workStartMinutes),
+               let end = date(on: day, minutes: profile.workEndMinutes),
+               end > start {
+                intervals.append(BlockedInterval(start: start, end: end))
+            }
+
+            if profile.protectSleep,
+               let sleepStart = date(on: day, minutes: profile.sleepStartMinutes) {
+                let wakeDay = profile.sleepEndMinutes <= profile.sleepStartMinutes
+                    ? calendar.date(byAdding: .day, value: 1, to: day) ?? day
+                    : day
+                if let sleepEnd = date(on: wakeDay, minutes: profile.sleepEndMinutes),
+                   sleepEnd > sleepStart {
+                    intervals.append(BlockedInterval(start: sleepStart, end: sleepEnd))
+                }
+            }
+
+            day = calendar.date(byAdding: .day, value: 1, to: day)
+                ?? day.addingTimeInterval(24 * 60 * 60)
+        }
+
+        return intervals
+    }
+
+    private func date(on day: Date, minutes: Int) -> Date? {
+        Calendar.current.date(
+            bySettingHour: minutes / 60,
+            minute: minutes % 60,
+            second: 0,
+            of: day
         )
     }
 
@@ -534,6 +654,7 @@ final class CalendarService {
         travelTimeMinutes: Int,
         deadline: Date?,
         priority: TaskPriority,
+        isMovable: Bool = true,
         reflowCount: Int = 0,
         manualOrder: Int? = nil
     ) -> String {
@@ -545,9 +666,9 @@ final class CalendarService {
         Created by Dynocal
 
         DYNOCAL_META_START
-        version: 4
+        version: 5
         itemType: task
-        scheduleType: movable
+        scheduleType: \(isMovable ? "movable" : "fixed")
         taskDescriptionBase64: \(encodedDescription)
         category: \(category.rawValue)
         durationMinutes: \(durationMinutes)
@@ -570,6 +691,7 @@ final class CalendarService {
             .map(Date.init(timeIntervalSince1970:))
         let priority = metadataValue("priority", in: event.notes)
             .flatMap(TaskPriority.init(rawValue:)) ?? .none
+        let isMovable = metadataValue("scheduleType", in: event.notes) != "fixed"
         let reflowCount = metadataValue("reflowCount", in: event.notes)
             .flatMap(Int.init) ?? 0
         let manualOrder = metadataValue("manualOrder", in: event.notes)
@@ -591,6 +713,7 @@ final class CalendarService {
             deadline: deadline,
             priority: priority,
             location: event.location ?? "",
+            isMovable: isMovable,
             reflowCount: reflowCount,
             manualOrder: manualOrder
         )
@@ -630,6 +753,7 @@ final class CalendarService {
 enum CalendarServiceError: LocalizedError {
     case noWritableCalendarSource
     case taskNotFound
+    case noRoomBeforeDeadline
 
     var errorDescription: String? {
         switch self {
@@ -637,6 +761,8 @@ enum CalendarServiceError: LocalizedError {
             return "No writable calendar is available. Add a calendar account or enable a local calendar, then try again."
         case .taskNotFound:
             return "That task could not be found."
+        case .noRoomBeforeDeadline:
+            return "No available time fits before this task’s deadline. Adjust the deadline, duration, or protected hours."
         }
     }
 }

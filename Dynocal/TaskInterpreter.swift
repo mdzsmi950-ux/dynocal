@@ -18,6 +18,8 @@ struct InterpretedTaskDraft {
     let preferredTimeOfDay: String
     let isFixed: Bool
     let needsBusinessHoursLookup: Bool
+    let durationWasExplicit: Bool
+    let locationNeedsConfirmation: Bool
 }
 
 enum TaskInterpreterAvailability: Equatable {
@@ -53,14 +55,14 @@ private enum GeneratedTimeOfDay {
 
 @Generable
 private struct GeneratedTaskDetails {
-    @Guide(description: "A concise task title containing only the action.")
+    @Guide(description: "A two-to-four-word action title. Exclude dates, times, duration, explanations, and location unless essential.")
     var title: String
 
     @Guide(description: "Estimated task duration in minutes.", .range(5...480))
     var durationMinutes: Int
 
-    @Guide(description: "Recommended start as ISO 8601 with time zone, or an empty string when the request gives no timing clue.")
-    var recommendedStartISO8601: String
+    @Guide(description: "Earliest allowed start as ISO 8601 with the supplied time-zone offset. Never place a not-before date on the prior calendar day. Empty when there is no timing clue.")
+    var earliestStartISO8601: String
 
     @Guide(description: "Deadline as ISO 8601 with time zone, or an empty string when no reliable deadline is stated or implied.")
     var deadlineISO8601: String
@@ -81,6 +83,12 @@ private struct GeneratedTaskDetails {
 
     @Guide(description: "True when correct placement depends on current opening or closing hours that were not explicitly supplied.")
     var needsBusinessHoursLookup: Bool
+
+    @Guide(description: "True only when the person explicitly supplied a duration.")
+    var durationWasExplicit: Bool
+
+    @Guide(description: "True for a chain, generic business, neighborhood, or other place that needs a specific location selected.")
+    var locationNeedsConfirmation: Bool
 }
 
 final class TaskInterpreter {
@@ -112,7 +120,8 @@ final class TaskInterpreter {
             tomorrow, Monday evening, or before Tuesday.
             Do not invent live facts such as store hours. When placement depends on unknown current
             business hours, set needsBusinessHoursLookup to true and leave deadlineISO8601 empty.
-            Keep the title short. Infer only what is reasonably supported by the request.
+            A phrase such as "after August 28 starts" is a hard not-before constraint, never August 27.
+            Keep the title to two-to-four words. Infer only what is reasonably supported by the request.
             """)
 
         let response = try await session.respond(
@@ -127,9 +136,9 @@ final class TaskInterpreter {
         let details = response.content
 
         return InterpretedTaskDraft(
-            title: details.title,
+            title: shortTitle(details.title),
             durationMinutes: details.durationMinutes,
-            startDate: parseISO8601(details.recommendedStartISO8601),
+            startDate: parseISO8601(details.earliestStartISO8601),
             category: map(details.category),
             travelTimeMinutes: details.travelTimeMinutes,
             deadline: parseISO8601(details.deadlineISO8601),
@@ -137,8 +146,17 @@ final class TaskInterpreter {
             location: details.location,
             preferredTimeOfDay: label(details.preferredTimeOfDay),
             isFixed: details.isFixed,
-            needsBusinessHoursLookup: details.needsBusinessHoursLookup
+            needsBusinessHoursLookup: details.needsBusinessHoursLookup,
+            durationWasExplicit: details.durationWasExplicit,
+            locationNeedsConfirmation: details.locationNeedsConfirmation
         )
+    }
+
+    private func shortTitle(_ value: String) -> String {
+        value
+            .split(whereSeparator: \.isWhitespace)
+            .prefix(4)
+            .joined(separator: " ")
     }
 
     private func parseISO8601(_ value: String) -> Date? {

@@ -396,6 +396,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = Dynocal/Dynocal.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
@@ -403,6 +404,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Dynocal;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dynocal needs Calendar access to place tasks on your calendar and move them when plans change.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Dynocal reads recent sleep times to protect your normal sleep window when scheduling tasks.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dynocal uses the microphone to add task descriptions by voice.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Dynocal turns your spoken task into text.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -433,6 +435,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = Dynocal/Dynocal.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WX8Q23CB7R;
@@ -440,6 +443,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Dynocal;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dynocal needs Calendar access to place tasks on your calendar and move them when plans change.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Dynocal reads recent sleep times to protect your normal sleep window when scheduling tasks.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dynocal uses the microphone to add task descriptions by voice.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Dynocal turns your spoken task into text.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

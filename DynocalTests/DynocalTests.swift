@@ -96,6 +96,7 @@ struct DynocalTests {
             deadline: deadline,
             priority: priority,
             location: "",
+            isMovable: true,
             reflowCount: 0,
             manualOrder: manualOrder
         )

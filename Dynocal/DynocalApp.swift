@@ -10,9 +10,12 @@ import SwiftData
 
 @main
 struct DynocalApp: App {
+    @StateObject private var preferences = PreferencesStore.shared
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(preferences)
         }
         .modelContainer(for: CompletedTaskRecord.self)
     }
