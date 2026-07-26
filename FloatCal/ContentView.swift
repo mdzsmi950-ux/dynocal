@@ -9,6 +9,11 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+private enum TaskSaveAlert {
+    case overdue
+    case fixedConflict
+}
+
 struct ContentView: View {
     private let calendarService = CalendarService.shared
     private let taskInterpreter = TaskInterpreter.shared
@@ -45,6 +50,7 @@ struct ContentView: View {
     @State private var newTaskRequiresBusinessHours = false
     @State private var newTaskIsMovable = true
     @State private var isInterpretingTask = false
+    @State private var hasAttemptedAnalysis = false
     @State private var taskInterpretationMessage: String?
     @State private var interpretedTimePreference = ""
     @State private var interpretedAsFixed = false
@@ -61,6 +67,10 @@ struct ContentView: View {
     @State private var taskEditMode: EditMode = .inactive
     @State private var taskNeedingReview: FloatCalTask?
     @State private var promptedReviewTaskIDs: Set<String> = []
+    @State private var taskSaveAlert: TaskSaveAlert?
+    @State private var hasConfirmedPastStart = false
+    @State private var activeReflowIssue: ReflowIssue?
+    @State private var queuedReflowIssues: [ReflowIssue] = []
 
     var body: some View {
         NavigationStack {
@@ -154,6 +164,11 @@ struct ContentView: View {
                     loadInitialCalendarState()
                 }
             }
+            .onChange(of: isShowingNewTaskSheet) { wasShowing, isShowing in
+                if wasShowing, !isShowing {
+                    presentNextReflowIssue()
+                }
+            }
             .sheet(isPresented: $isShowingNewTaskSheet) {
                 newTaskSheet
             }
@@ -191,6 +206,28 @@ struct ContentView: View {
                 }
             } message: { task in
                 Text("“\(task.title)” was added directly to the FloatCal calendar. Review its duration, priority, and whether FloatCal may reflow it.")
+            }
+            .alert(
+                "Task Couldn’t Reflow",
+                isPresented: Binding(
+                    get: { activeReflowIssue != nil },
+                    set: { if !$0 { activeReflowIssue = nil } }
+                ),
+                presenting: activeReflowIssue
+            ) { issue in
+                Button("Edit Task") {
+                    activeReflowIssue = nil
+                    beginEditing(issue.task)
+                }
+                Button("Skip for Now", role: .cancel) {
+                    activeReflowIssue = nil
+                    Task {
+                        await Task.yield()
+                        presentNextReflowIssue()
+                    }
+                }
+            } message: { issue in
+                Text("“\(issue.task.title)” stayed overdue. \(issue.reason)")
             }
         }
     }
@@ -393,6 +430,15 @@ struct ContentView: View {
                         .font(.footnote)
                         .foregroundStyle(message.hasPrefix("Analyzed") ? .green : .secondary)
                     }
+
+                    if isInterpretingTask {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Analyzing task details…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section("Task Details") {
@@ -418,7 +464,13 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isCreatingTask ? "Saving..." : (editingTask == nil ? "Create" : "Save")) {
+                    Button(
+                        isInterpretingTask
+                            ? "Analyzing..."
+                            : (isCreatingTask
+                                ? "Saving..."
+                                : (editingTask == nil ? "Create" : "Save"))
+                    ) {
                         saveTask()
                     }
                     .disabled(!canCreateTask)
@@ -445,6 +497,37 @@ struct ContentView: View {
                     saveTask()
                 }
                 .environmentObject(preferences)
+            }
+            .alert(
+                taskSaveAlertTitle,
+                isPresented: Binding(
+                    get: { taskSaveAlert != nil },
+                    set: { if !$0 { taskSaveAlert = nil } }
+                )
+            ) {
+                switch taskSaveAlert {
+                case .overdue:
+                    Button("Create as Overdue") {
+                        hasConfirmedPastStart = true
+                        taskSaveAlert = nil
+                        saveTask()
+                    }
+                    Button("Edit Timing", role: .cancel) {
+                        taskSaveAlert = nil
+                    }
+                case .fixedConflict:
+                    Button("Override Conflict") {
+                        taskSaveAlert = nil
+                        saveTask(allowFixedConflict: true)
+                    }
+                    Button("Edit Task", role: .cancel) {
+                        taskSaveAlert = nil
+                    }
+                case nil:
+                    Button("OK", role: .cancel) {}
+                }
+            } message: {
+                Text(taskSaveAlertMessage)
             }
         }
     }
@@ -644,6 +727,28 @@ struct ContentView: View {
         tasks.filter { $0.startDate < Date() && $0.isMovable }.count
     }
 
+    private var taskSaveAlertTitle: String {
+        switch taskSaveAlert {
+        case .overdue:
+            return "This Task Is Already Overdue"
+        case .fixedConflict:
+            return "This Fixed Time Conflicts"
+        case nil:
+            return ""
+        }
+    }
+
+    private var taskSaveAlertMessage: String {
+        switch taskSaveAlert {
+        case .overdue:
+            return "The earliest start has already passed. Create it on the calendar as overdue so you can Reflow it, or edit the timing first."
+        case .fixedConflict:
+            return "This fixed task overlaps another calendar event or protected work/sleep time, including any required travel. Override it only if this commitment takes precedence."
+        case nil:
+            return ""
+        }
+    }
+
     private func beginNewTask() {
         editingTask = nil
         newTaskTitle = ""
@@ -665,11 +770,14 @@ struct ContentView: View {
         taskInterpretationMessage = nil
         interpretedTimePreference = ""
         interpretedAsFixed = false
+        hasAttemptedAnalysis = false
         isManualMode = true
         isShowingOptionalDetails = false
         clarificationIssues = []
         isShowingClarification = false
         dictationPrefix = ""
+        taskSaveAlert = nil
+        hasConfirmedPastStart = false
 
         if case .unavailable(let reason) = taskInterpreter.availability {
             taskInterpretationMessage = "\(reason) Manual entry is ready."
@@ -700,10 +808,13 @@ struct ContentView: View {
         taskInterpretationMessage = nil
         interpretedTimePreference = task.preferredTimeOfDay
         interpretedAsFixed = false
+        hasAttemptedAnalysis = false
         isManualMode = true
         isShowingOptionalDetails = true
         clarificationIssues = []
         dictationPrefix = ""
+        taskSaveAlert = nil
+        hasConfirmedPastStart = false
         isShowingNewTaskSheet = true
     }
 
@@ -742,7 +853,7 @@ struct ContentView: View {
         }
     }
 
-    private func interpretTaskDescription() {
+    private func interpretTaskDescription(automaticallyCreate: Bool = false) {
         let description = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !description.isEmpty, !isInterpretingTask else { return }
 
@@ -757,6 +868,7 @@ struct ContentView: View {
 
         isManualMode = false
         isInterpretingTask = true
+        hasAttemptedAnalysis = true
         taskInterpretationMessage = nil
 
         Task {
@@ -814,12 +926,17 @@ struct ContentView: View {
                 } else {
                     taskInterpretationMessage = "Analyzed with Apple Intelligence. Review before creating."
                 }
+
+                isInterpretingTask = false
+
+                if automaticallyCreate, clarificationIssues.isEmpty {
+                    saveTask()
+                }
             } catch {
                 isManualMode = true
                 taskInterpretationMessage = "Apple Intelligence couldn’t fill the details: \(error.localizedDescription)"
+                isInterpretingTask = false
             }
-
-            isInterpretingTask = false
         }
     }
 
@@ -965,7 +1082,32 @@ struct ContentView: View {
         )
     }
 
-    private func saveTask() {
+    private var shouldAutomaticallyAnalyzeBeforeCreating: Bool {
+        guard editingTask == nil,
+              isManualMode,
+              !hasAttemptedAnalysis,
+              !newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              newTaskStartSource == .defaultValue,
+              newTaskDurationSource == .defaultValue,
+              newTaskCategory == .none,
+              !newTaskHasDeadline,
+              newTaskPriority == .medium,
+              newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              newTaskIsMovable,
+              case .available = taskInterpreter.availability else {
+            return false
+        }
+
+        return true
+    }
+
+    private func saveTask(allowFixedConflict: Bool = false) {
+        if shouldAutomaticallyAnalyzeBeforeCreating {
+            interpretTaskDescription(automaticallyCreate: true)
+            return
+        }
+
         let trimmedDescription = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let enteredTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedTitle = enteredTitle.isEmpty ? trimmedDescription : enteredTitle
@@ -980,6 +1122,14 @@ struct ContentView: View {
         guard clarificationIssues.isEmpty else {
             isShowingClarification = true
             statusText = "Confirm the missing task details first"
+            return
+        }
+
+        if editingTask == nil,
+           newTaskIsMovable,
+           newTaskStartDate < Date(),
+           !hasConfirmedPastStart {
+            taskSaveAlert = .overdue
             return
         }
 
@@ -1003,7 +1153,8 @@ struct ContentView: View {
                         preferredTimeOfDay: interpretedTimePreference,
                         location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
                         isMovable: newTaskIsMovable,
-                        requiresBusinessHours: newTaskRequiresBusinessHours
+                        requiresBusinessHours: newTaskRequiresBusinessHours,
+                        allowFixedConflict: allowFixedConflict
                     )
                 } else {
                     savedTask = try await calendarService.addTask(
@@ -1017,7 +1168,9 @@ struct ContentView: View {
                         preferredTimeOfDay: interpretedTimePreference,
                         location: newTaskLocation.trimmingCharacters(in: .whitespacesAndNewlines),
                         isMovable: newTaskIsMovable,
-                        requiresBusinessHours: newTaskRequiresBusinessHours
+                        requiresBusinessHours: newTaskRequiresBusinessHours,
+                        createAsOverdue: hasConfirmedPastStart,
+                        allowFixedConflict: allowFixedConflict
                     )
                 }
 
@@ -1026,7 +1179,11 @@ struct ContentView: View {
                 speechInput.stop()
                 isShowingNewTaskSheet = false
                 self.editingTask = nil
+                hasConfirmedPastStart = false
                 statusText = "Saved \(trimmedTitle)."
+            } catch CalendarServiceError.fixedTimeConflict {
+                taskSaveAlert = .fixedConflict
+                statusText = "Confirm whether this fixed commitment should override the conflict."
             } catch {
                 statusText = "Could not save task: \(error.localizedDescription)"
             }
@@ -1182,18 +1339,21 @@ struct ContentView: View {
                 refreshTasks()
 
                 if result.updatedTasks.isEmpty {
-                    if result.deferredTasks.isEmpty {
+                    if result.issues.isEmpty {
                         statusText = "You’re caught up — there are no overdue tasks."
                     } else {
-                        statusText = "No safe opening was found for \(result.deferredTasks.count) low-urgency task(s) in the next seven days."
+                        statusText = "\(result.issues.count) overdue task(s) need your attention."
                     }
-                } else if !result.deferredTasks.isEmpty {
-                    statusText = "Reflowed \(result.updatedTasks.count) task(s); kept \(result.deferredTasks.count) low-urgency task(s) overdue because no safe opening was found."
+                } else if !result.issues.isEmpty {
+                    statusText = "Reflowed \(result.updatedTasks.count) task(s); \(result.issues.count) still need your attention."
                 } else if result.skippedConflicts {
                     statusText = "Reflowed \(result.updatedTasks.count) overdue task(s) around your calendar."
                 } else {
                     statusText = "Reflowed \(result.updatedTasks.count) overdue task(s)."
                 }
+
+                queuedReflowIssues = result.issues
+                presentNextReflowIssue()
             } catch {
                 statusText = "Could not reflow tasks: \(error.localizedDescription)"
             }
@@ -1201,6 +1361,16 @@ struct ContentView: View {
             try? await Task.sleep(for: .milliseconds(450))
             isRescheduling = false
         }
+    }
+
+    private func presentNextReflowIssue() {
+        guard activeReflowIssue == nil,
+              !isShowingNewTaskSheet,
+              !queuedReflowIssues.isEmpty else {
+            return
+        }
+
+        activeReflowIssue = queuedReflowIssues.removeFirst()
     }
 
     private static func defaultTaskStartDate() -> Date {
@@ -1589,8 +1759,11 @@ private struct TaskClarificationView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(confirmationTitle) {
-                        onConfirm()
                         dismiss()
+                        Task { @MainActor in
+                            await Task.yield()
+                            onConfirm()
+                        }
                     }
                     .fontWeight(.semibold)
                     .disabled(!canContinue)

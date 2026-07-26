@@ -79,10 +79,6 @@ struct FloatCalTask: Identifiable, Hashable {
         startDate.addingTimeInterval(TimeInterval(travelTimeMinutes * 60))
     }
 
-    var requiresGuaranteedPlacement: Bool {
-        priority == .high || deadline != nil
-    }
-
     nonisolated static func sorted(_ tasks: [FloatCalTask], by mode: TaskSortMode) -> [FloatCalTask] {
         switch mode {
         case .time:
@@ -144,8 +140,15 @@ struct FloatCalTask: Identifiable, Hashable {
 
 struct RescheduleResult {
     let updatedTasks: [FloatCalTask]
-    let deferredTasks: [FloatCalTask]
+    let issues: [ReflowIssue]
     let skippedConflicts: Bool
+}
+
+struct ReflowIssue: Identifiable {
+    let task: FloatCalTask
+    let reason: String
+
+    var id: String { task.id }
 }
 
 private struct PlannedTaskUpdate {
@@ -292,7 +295,9 @@ final class CalendarService {
         preferredTimeOfDay: String,
         location: String,
         isMovable: Bool,
-        requiresBusinessHours: Bool
+        requiresBusinessHours: Bool,
+        createAsOverdue: Bool = false,
+        allowFixedConflict: Bool = false
     ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
         let calendar = try floatCalCalendar()
@@ -300,7 +305,13 @@ final class CalendarService {
         let taskDuration = TimeInterval(durationMinutes * 60)
         let placement: PlacementResult
 
-        if isMovable {
+        if isMovable, createAsOverdue {
+            placement = PlacementResult(
+                newStartDate: startDate,
+                travelTimeMinutes: 0,
+                skippedConflict: false
+            )
+        } else if isMovable {
             placement = try await nextOpenStartDate(
                 from: startDate,
                 workDuration: taskDuration,
@@ -315,8 +326,10 @@ final class CalendarService {
             placement = try await fixedPlacement(
                 taskStartDate: startDate,
                 workDuration: taskDuration,
+                category: category,
                 destination: location,
                 requiresBusinessHours: requiresBusinessHours,
+                allowConflict: allowFixedConflict,
                 excludingEventIDs: []
             )
         }
@@ -364,7 +377,8 @@ final class CalendarService {
         preferredTimeOfDay: String,
         location: String,
         isMovable: Bool,
-        requiresBusinessHours: Bool
+        requiresBusinessHours: Bool,
+        allowFixedConflict: Bool = false
     ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
         let event = try floatCalEvent(id: id)
@@ -389,8 +403,10 @@ final class CalendarService {
             placement = try await fixedPlacement(
                 taskStartDate: startDate,
                 workDuration: taskDuration,
+                category: category,
                 destination: location,
                 requiresBusinessHours: requiresBusinessHours,
+                allowConflict: allowFixedConflict,
                 excludingEventIDs: [id]
             )
         }
@@ -521,7 +537,7 @@ final class CalendarService {
             .sorted(by: FloatCalTask.isOrderedBefore)
 
         var plannedUpdates: [PlannedTaskUpdate] = []
-        var deferredTasks: [FloatCalTask] = []
+        var issues: [ReflowIssue] = []
         var nextCandidateDate = now
         var skippedConflicts = false
         let overdueTaskIDs = Set(overdueTasks.map(\.id))
@@ -557,10 +573,12 @@ final class CalendarService {
                 nextCandidateDate = endDate
                 skippedConflicts = skippedConflicts || placement.skippedConflict
             } catch {
-                if task.requiresGuaranteedPlacement {
-                    throw error
-                }
-                deferredTasks.append(task)
+                issues.append(
+                    ReflowIssue(
+                        task: task,
+                        reason: error.localizedDescription
+                    )
+                )
             }
         }
 
@@ -605,7 +623,7 @@ final class CalendarService {
 
         return RescheduleResult(
             updatedTasks: updatedTasks,
-            deferredTasks: deferredTasks,
+            issues: issues,
             skippedConflicts: skippedConflicts
         )
     }
@@ -976,8 +994,10 @@ final class CalendarService {
     private func fixedPlacement(
         taskStartDate: Date,
         workDuration: TimeInterval,
+        category: TaskCategory,
         destination: String,
         requiresBusinessHours: Bool,
+        allowConflict: Bool,
         excludingEventIDs: Set<String>
     ) async throws -> PlacementResult {
         let trimmedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1048,11 +1068,19 @@ final class CalendarService {
         let blockStartDate = taskStartDate.addingTimeInterval(
             TimeInterval(-travelTimeMinutes * 60)
         )
-        if hasCalendarConflict(
+        let protectedTimeConflict = lifestyleBlockedIntervals(
+            from: blockStartDate,
+            through: taskEndDate,
+            category: category
+        ).contains {
+            blockStartDate < $0.end && taskEndDate > $0.start
+        }
+        let calendarConflict = hasCalendarConflict(
             from: blockStartDate,
             through: taskEndDate,
             excludingEventIDs: excludingEventIDs
-        ) {
+        )
+        if !allowConflict, calendarConflict || protectedTimeConflict {
             throw CalendarServiceError.fixedTimeConflict
         }
 
@@ -1331,7 +1359,7 @@ enum CalendarServiceError: LocalizedError {
         case .outsideBusinessHours:
             return "This fixed time falls outside the saved business hours."
         case .fixedTimeConflict:
-            return "This fixed task overlaps another calendar event, including any required travel time. Choose a different time."
+            return "This fixed task overlaps another calendar event or protected work/sleep time, including any required travel. Choose a different time or confirm the override."
         }
     }
 }

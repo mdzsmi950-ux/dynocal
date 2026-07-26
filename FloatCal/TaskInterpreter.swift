@@ -132,6 +132,33 @@ struct TaskTextConstraints {
         ) != nil
     }
 
+    nonisolated static func explicitlyAllowsReflow(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(movable|flexible|can\s+(?:be\s+)?reflowed|can\s+reflow)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    nonisolated static func explicitlyPreventsReflow(in text: String) -> Bool {
+        text.range(
+            of: #"(?i)\b(fixed(?:\s+time)?|do\s+not\s+reflow|don['’]?t\s+reflow|cannot\s+(?:be\s+)?reflowed|can['’]?t\s+(?:be\s+)?reflowed)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    nonisolated static func impliesFixedCommitment(in text: String) -> Bool {
+        let isCreatingCommitment = text.range(
+            of: #"(?i)\b(book|make|schedule|arrange|reschedule)\b.{0,30}\b(appointment|reservation)\b"#,
+            options: .regularExpression
+        ) != nil
+        guard !isCreatingCommitment else { return false }
+
+        return text.range(
+            of: #"(?i)\b(appointment|reservation|interview|flight|ticketed\s+(?:train|bus)|scheduled\s+class)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
     private nonisolated static func dateParts(
         from match: NSTextCheckingResult,
         text: String
@@ -279,6 +306,14 @@ final class TaskInterpreter {
             || (!location.isEmpty && category == .errand)
             ? .destination
             : .anywhere
+        let isFixed: Bool
+        if TaskTextConstraints.explicitlyAllowsReflow(in: description) {
+            isFixed = false
+        } else {
+            isFixed = details.isFixed
+                || TaskTextConstraints.explicitlyPreventsReflow(in: description)
+                || TaskTextConstraints.impliesFixedCommitment(in: description)
+        }
 
         return InterpretedTaskDraft(
             title: shortTitle(details.title),
@@ -295,7 +330,7 @@ final class TaskInterpreter {
             preferredTimeOfDay: TaskTextConstraints.hasExplicitTimeOfDay(in: description)
                 ? label(details.preferredTimeOfDay)
                 : "",
-            isFixed: details.isFixed,
+            isFixed: isFixed,
             requiresBusinessHours: details.needsBusinessHoursLookup
         )
     }

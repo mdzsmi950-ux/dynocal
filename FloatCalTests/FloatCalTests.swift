@@ -78,20 +78,6 @@ struct FloatCalTests {
         #expect(ordered.map(\.id) == ["deadline", "none"])
     }
 
-    @Test func highPriorityOrDeadlineTasksCannotBeSilentlyDeferred() {
-        let ordinary = task(id: "ordinary", priority: .medium)
-        let high = task(id: "high", priority: .high)
-        let timed = task(
-            id: "timed",
-            priority: .low,
-            deadline: Date(timeIntervalSince1970: 30_000)
-        )
-
-        #expect(!ordinary.requiresGuaranteedPlacement)
-        #expect(high.requiresGuaranteedPlacement)
-        #expect(timed.requiresGuaranteedPlacement)
-    }
-
     @Test func lifestyleInfersWorkAndHomeOrigins() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -210,6 +196,30 @@ struct FloatCalTests {
         #expect(!TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter during the sale"))
         #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter in the evening"))
         #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter after 5 p.m."))
+    }
+
+    @Test func explicitMovableLanguageOverridesModelClassification() {
+        #expect(TaskTextConstraints.explicitlyAllowsReflow(
+            in: "Fold laundry. Medium priority. Movable."
+        ))
+        #expect(!TaskTextConstraints.explicitlyPreventsReflow(
+            in: "Fold laundry. Medium priority. Movable."
+        ))
+    }
+
+    @Test func explicitFixedLanguagePreventsReflow() {
+        #expect(TaskTextConstraints.explicitlyPreventsReflow(
+            in: "Dentist appointment at 10 AM. Do not reflow."
+        ))
+    }
+
+    @Test func appointmentsAreFixedButSchedulingOneIsNot() {
+        #expect(TaskTextConstraints.impliesFixedCommitment(
+            in: "Dentist appointment July 27 at 10 AM."
+        ))
+        #expect(!TaskTextConstraints.impliesFixedCommitment(
+            in: "Schedule a dentist appointment."
+        ))
     }
 
     @Test func completenessAsksOnlyForUserResolvableBlockingFacts() {

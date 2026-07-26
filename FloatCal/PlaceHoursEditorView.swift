@@ -55,6 +55,16 @@ struct PlaceHoursEditorView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
+                    draft.weeklyHours = draft.weeklyHours.map { interval in
+                        var normalized = interval
+                        normalized.opensAtMinutes = Self.nearestQuarterHour(
+                            interval.opensAtMinutes
+                        )
+                        normalized.closesAtMinutes = Self.nearestQuarterHour(
+                            interval.closesAtMinutes
+                        )
+                        return normalized
+                    }
                     draft.weeklyHours.sort {
                         $0.weekday == $1.weekday
                             ? $0.opensAtMinutes < $1.opensAtMinutes
@@ -85,21 +95,19 @@ struct PlaceHoursEditorView: View {
                     )
 
                     if !interval.isOpen24Hours {
-                        DatePicker(
+                        quarterHourPicker(
                             "Opens",
-                            selection: hoursBinding(
+                            selection: minutesBinding(
                                 id: interval.id,
                                 keyPath: \.opensAtMinutes
-                            ),
-                            displayedComponents: .hourAndMinute
+                            )
                         )
-                        DatePicker(
+                        quarterHourPicker(
                             "Closes",
-                            selection: hoursBinding(
+                            selection: minutesBinding(
                                 id: interval.id,
                                 keyPath: \.closesAtMinutes
-                            ),
-                            displayedComponents: .hourAndMinute
+                            )
                         )
                     }
 
@@ -156,33 +164,58 @@ struct PlaceHoursEditorView: View {
         )
     }
 
-    private func hoursBinding(
+    private func quarterHourPicker(
+        _ label: String,
+        selection: Binding<Int>
+    ) -> some View {
+        LabeledContent(label) {
+            Picker(label, selection: selection) {
+                ForEach(Array(stride(from: 0, to: 24 * 60, by: 15)), id: \.self) {
+                    minutes in
+                    Text(Self.timeLabel(minutes))
+                        .tag(minutes)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+        }
+    }
+
+    private func minutesBinding(
         id: UUID,
         keyPath: WritableKeyPath<PlaceDayHours, Int>
-    ) -> Binding<Date> {
+    ) -> Binding<Int> {
         Binding(
             get: {
                 let minutes = draft.weeklyHours
                     .first(where: { $0.id == id })?[keyPath: keyPath]
                     ?? 9 * 60
-                return Calendar.current.date(
-                    bySettingHour: minutes / 60,
-                    minute: minutes % 60,
-                    second: 0,
-                    of: Date()
-                ) ?? Date()
+                return Self.nearestQuarterHour(minutes)
             },
-            set: { date in
+            set: { minutes in
                 guard let index = draft.weeklyHours.firstIndex(where: {
                     $0.id == id
                 }) else {
                     return
                 }
-                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
-                draft.weeklyHours[index][keyPath: keyPath] =
-                    (components.hour ?? 0) * 60 + (components.minute ?? 0)
+                draft.weeklyHours[index][keyPath: keyPath] = minutes
             }
         )
+    }
+
+    private static func nearestQuarterHour(_ minutes: Int) -> Int {
+        let bounded = min(max(minutes, 0), 24 * 60 - 1)
+        return min((bounded / 15) * 15, 23 * 60 + 45)
+    }
+
+    private static func timeLabel(_ minutes: Int) -> String {
+        let date = Calendar.current.date(
+            bySettingHour: minutes / 60,
+            minute: minutes % 60,
+            second: 0,
+            of: Date()
+        ) ?? Date()
+        return date.formatted(date: .omitted, time: .shortened)
     }
 
     private func intervalBinding<Value>(
