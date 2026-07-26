@@ -1,6 +1,6 @@
 //
-//  DynocalApp.swift
-//  Dynocal
+//  FloatCalApp.swift
+//  FloatCal
 //
 //  Created by Maddie Smith on 5/22/26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import SwiftData
 
 @main
-struct DynocalApp: App {
+struct FloatCalApp: App {
     @StateObject private var preferences = PreferencesStore.shared
 
     var body: some Scene {

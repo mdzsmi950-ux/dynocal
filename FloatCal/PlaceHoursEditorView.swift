@@ -47,7 +47,7 @@ struct PlaceHoursEditorView: View {
                     }
                 }
             } footer: {
-                Text("Apple Maps is the reference. Dynocal saves only the hours you confirm here.")
+                Text("Apple Maps is the reference. FloatCal saves only the hours you confirm here.")
             }
         }
         .navigationTitle(draft.name)

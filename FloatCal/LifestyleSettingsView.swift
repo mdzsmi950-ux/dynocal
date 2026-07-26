@@ -53,7 +53,7 @@ struct LifestyleSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Dynocal keeps this profile on your device and uses it to avoid times that don’t fit your life.")
+                    Text("FloatCal keeps this profile on your device and uses it to avoid times that don’t fit your life.")
                 }
 
                 Section("Work") {
@@ -133,7 +133,7 @@ struct LifestyleSettingsView: View {
                 } header: {
                     Text("Travel")
                 } footer: {
-                    Text("Dynocal uses this mode when calculating travel time for destination tasks.")
+                    Text("FloatCal uses this mode when calculating travel time for destination tasks.")
                 }
 
                 if !isOnboarding {
@@ -180,7 +180,7 @@ struct LifestyleSettingsView: View {
                     }
                 }
             }
-            .navigationTitle(isOnboarding ? "Make Dynocal Yours" : "Settings")
+            .navigationTitle(isOnboarding ? "Make FloatCal Yours" : "Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if !isOnboarding {

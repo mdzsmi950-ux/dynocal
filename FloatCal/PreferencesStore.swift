@@ -287,12 +287,14 @@ final class PreferencesStore: ObservableObject {
     }
 
     private let defaults: UserDefaults
-    private let storageKey = "dynocal.lifestyleProfile.v1"
+    private let storageKey = "floatcal.lifestyleProfile.v1"
+    private let legacyStorageKey = "dynocal.lifestyleProfile.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        if let data = defaults.data(forKey: storageKey),
+        if let data = defaults.data(forKey: storageKey)
+            ?? defaults.data(forKey: legacyStorageKey),
            let profile = try? JSONDecoder().decode(LifestyleProfile.self, from: data) {
             self.profile = profile
         } else {

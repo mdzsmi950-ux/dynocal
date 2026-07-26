@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  Dynocal
+//  FloatCal
 //
 //  Created by Maddie Smith on 5/22/26.
 //
@@ -26,8 +26,8 @@ struct ContentView: View {
     @State private var isCreatingTask = false
     @State private var isRescheduling = false
     @State private var isShowingNewTaskSheet = false
-    @State private var editingTask: DynocalTask?
-    @State private var tasks: [DynocalTask] = []
+    @State private var editingTask: FloatCalTask?
+    @State private var tasks: [FloatCalTask] = []
     @State private var newTaskTitle = ""
     @State private var newTaskDescription = ""
     @State private var newTaskStartDate = Self.defaultTaskStartDate()
@@ -59,7 +59,7 @@ struct ContentView: View {
     @State private var isAdjustingPriority = false
     @State private var priorityDraftTaskIDs: [String] = []
     @State private var taskEditMode: EditMode = .inactive
-    @State private var taskNeedingReview: DynocalTask?
+    @State private var taskNeedingReview: FloatCalTask?
     @State private var promptedReviewTaskIDs: Set<String> = []
 
     var body: some View {
@@ -97,7 +97,7 @@ struct ContentView: View {
                     .padding(.bottom, 16)
                 }
             }
-            .navigationTitle("Dynocal")
+            .navigationTitle("FloatCal")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -190,7 +190,7 @@ struct ContentView: View {
                     taskNeedingReview = nil
                 }
             } message: { task in
-                Text("“\(task.title)” was added directly to the Dynocal calendar. Review its duration, priority, and whether Dynocal may reflow it.")
+                Text("“\(task.title)” was added directly to the FloatCal calendar. Review its duration, priority, and whether FloatCal may reflow it.")
             }
         }
     }
@@ -199,15 +199,15 @@ struct ContentView: View {
         TaskSortMode(rawValue: taskSortModeRawValue) ?? .priority
     }
 
-    private var displayedTasks: [DynocalTask] {
+    private var displayedTasks: [FloatCalTask] {
         guard isAdjustingPriority else {
-            return DynocalTask.sorted(tasks, by: taskSortMode)
+            return FloatCalTask.sorted(tasks, by: taskSortMode)
         }
 
         let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
         let draftedTasks = priorityDraftTaskIDs.compactMap { tasksByID[$0] }
         let draftedIDs = Set(priorityDraftTaskIDs)
-        let missingTasks = DynocalTask.sorted(
+        let missingTasks = FloatCalTask.sorted(
             tasks.filter { !draftedIDs.contains($0.id) },
             by: .priority
         )
@@ -225,7 +225,7 @@ struct ContentView: View {
                 Label("Calendar Access", systemImage: "calendar.badge.plus")
                     .font(.headline)
 
-                Text("Dynocal needs Calendar access to place tasks on your calendar and move them when plans change.")
+                Text("FloatCal needs Calendar access to place tasks on your calendar and move them when plans change.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -340,7 +340,7 @@ struct ContentView: View {
                 Section("What do you need to do?") {
                     ZStack(alignment: .topLeading) {
                         if newTaskDescription.isEmpty {
-                            Text("Describe the task, timing, and anything Dynocal should know...")
+                            Text("Describe the task, timing, and anything FloatCal should know...")
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 8)
@@ -404,7 +404,7 @@ struct ContentView: View {
                 } header: {
                     Text(manualIssues.isEmpty ? "Complete" : "Still Needed")
                 } footer: {
-                    Text("Dynocal uses the same scheduling rules with or without Apple Intelligence.")
+                    Text("FloatCal uses the same scheduling rules with or without Apple Intelligence.")
                 }
             }
             .navigationTitle(editingTask == nil ? "New Task" : "Edit Task")
@@ -580,7 +580,7 @@ struct ContentView: View {
         }
     }
 
-    private func taskRow(_ task: DynocalTask) -> some View {
+    private func taskRow(_ task: FloatCalTask) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(task.title)
@@ -599,7 +599,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func taskStatusView(_ task: DynocalTask) -> some View {
+    private func taskStatusView(_ task: FloatCalTask) -> some View {
         HStack(spacing: 6) {
             if task.needsDetailsReview {
                 Image(systemName: "questionmark.circle.fill")
@@ -677,7 +677,7 @@ struct ContentView: View {
         isShowingNewTaskSheet = true
     }
 
-    private func beginEditing(_ task: DynocalTask) {
+    private func beginEditing(_ task: FloatCalTask) {
         editingTask = task
         newTaskTitle = task.title
         newTaskDescription = task.taskDescription
@@ -987,7 +987,7 @@ struct ContentView: View {
 
         Task {
             do {
-                let savedTask: DynocalTask
+                let savedTask: FloatCalTask
 
                 if let editingTask {
                     savedTask = try await calendarService.updateTask(
@@ -1069,13 +1069,13 @@ struct ContentView: View {
         taskNeedingReview = task
     }
 
-    private func upsertTask(_ task: DynocalTask) {
+    private func upsertTask(_ task: FloatCalTask) {
         tasks.removeAll { $0.id == task.id }
         tasks.append(task)
         tasks.sort { $0.startDate < $1.startDate }
     }
 
-    private func completeTask(_ task: DynocalTask) {
+    private func completeTask(_ task: FloatCalTask) {
         do {
             statusText = "Removing \(task.title)..."
             let deletedTask = try calendarService.completeTask(id: task.id)
@@ -1120,7 +1120,7 @@ struct ContentView: View {
     private func beginPriorityAdjustment() {
         guard taskSortMode == .priority, tasks.count > 1 else { return }
 
-        priorityDraftTaskIDs = DynocalTask.sorted(tasks, by: .priority).map(\.id)
+        priorityDraftTaskIDs = FloatCalTask.sorted(tasks, by: .priority).map(\.id)
 
         withAnimation {
             isAdjustingPriority = true
@@ -1222,7 +1222,7 @@ struct ContentView: View {
 
 private struct CompletedTasksView: View {
     private let calendarService = CalendarService.shared
-    let onRecover: (DynocalTask) -> Void
+    let onRecover: (FloatCalTask) -> Void
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CompletedTaskRecord.completedAt, order: .reverse)
@@ -1410,7 +1410,7 @@ private struct TaskClarificationView: View {
                 Section {
                     Text("Just a few details")
                         .font(.headline)
-                    Text("Dynocal asks only about information that is missing or could change where the task belongs.")
+                    Text("FloatCal asks only about information that is missing or could change where the task belongs.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -1578,7 +1578,7 @@ private struct TaskClarificationView: View {
                     } header: {
                         Text("What hours is this place open?")
                     } footer: {
-                        Text("Save these once. Dynocal will reuse them and you can review them later in Settings.")
+                        Text("Save these once. FloatCal will reuse them and you can review them later in Settings.")
                     }
                 }
             }

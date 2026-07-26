@@ -121,7 +121,7 @@ struct TaskCompletenessEngine {
                 TaskClarificationIssue(
                     kind: .destination,
                     title: query.isEmpty ? "Where does this happen?" : "Which \(query)?",
-                    explanation: "Dynocal needs one exact destination before it can calculate travel."
+                    explanation: "FloatCal needs one exact destination before it can calculate travel."
                 )
             )
         }
@@ -134,7 +134,7 @@ struct TaskCompletenessEngine {
                 TaskClarificationIssue(
                     kind: .businessHours,
                     title: "What hours is this place open?",
-                    explanation: "Save the weekly hours once and Dynocal will reuse them."
+                    explanation: "Save the weekly hours once and FloatCal will reuse them."
                 )
             )
         }

@@ -1,21 +1,21 @@
 //
-//  DynocalTests.swift
-//  DynocalTests
+//  FloatCalTests.swift
+//  FloatCalTests
 //
 //  Created by Maddie Smith on 5/22/26.
 //
 
 import Foundation
 import Testing
-@testable import Dynocal
+@testable import FloatCal
 
-struct DynocalTests {
+struct FloatCalTests {
 
     @Test func higherPriorityTasksSortFirst() {
         let low = task(id: "low", priority: .low)
         let high = task(id: "high", priority: .high)
 
-        let ordered = [low, high].sorted(by: DynocalTask.isOrderedBefore)
+        let ordered = [low, high].sorted(by: FloatCalTask.isOrderedBefore)
 
         #expect(ordered.map(\.id) == ["high", "low"])
     }
@@ -32,7 +32,7 @@ struct DynocalTests {
             deadline: Date(timeIntervalSince1970: 1_000)
         )
 
-        let ordered = [later, sooner].sorted(by: DynocalTask.isOrderedBefore)
+        let ordered = [later, sooner].sorted(by: FloatCalTask.isOrderedBefore)
 
         #expect(ordered.map(\.id) == ["sooner", "later"])
     }
@@ -41,7 +41,7 @@ struct DynocalTests {
         let high = task(id: "high", priority: .high, manualOrder: 1)
         let low = task(id: "low", priority: .low, manualOrder: 0)
 
-        let ordered = [high, low].sorted(by: DynocalTask.isOrderedBefore)
+        let ordered = [high, low].sorted(by: FloatCalTask.isOrderedBefore)
 
         #expect(ordered.map(\.id) == ["low", "high"])
     }
@@ -60,7 +60,7 @@ struct DynocalTests {
             manualOrder: 1
         )
 
-        let ordered = DynocalTask.sorted([later, sooner], by: .time)
+        let ordered = FloatCalTask.sorted([later, sooner], by: .time)
 
         #expect(ordered.map(\.id) == ["sooner", "later"])
     }
@@ -73,7 +73,7 @@ struct DynocalTests {
             deadline: Date(timeIntervalSince1970: 30_000)
         )
 
-        let ordered = DynocalTask.sorted([noDeadline, deadline], by: .deadline)
+        let ordered = FloatCalTask.sorted([noDeadline, deadline], by: .deadline)
 
         #expect(ordered.map(\.id) == ["deadline", "none"])
     }
@@ -372,7 +372,7 @@ struct DynocalTests {
 
     @Test func travelExtendsCalendarBlockWithoutChangingWorkDuration() {
         let start = Date(timeIntervalSince1970: 10_000)
-        let task = DynocalTask(
+        let task = FloatCalTask(
             id: "travel",
             title: "Buy cat litter",
             taskDescription: "Buy cat litter",
@@ -467,8 +467,8 @@ struct DynocalTests {
         startDate: Date = Date(timeIntervalSince1970: 10_000),
         deadline: Date? = nil,
         manualOrder: Int? = nil
-    ) -> DynocalTask {
-        return DynocalTask(
+    ) -> FloatCalTask {
+        return FloatCalTask(
             id: id,
             title: id,
             taskDescription: id,

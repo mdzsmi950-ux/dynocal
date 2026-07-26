@@ -1,6 +1,6 @@
 //
 //  CompletedTaskRecord.swift
-//  Dynocal
+//  FloatCal
 //
 
 import Foundation
@@ -21,7 +21,7 @@ final class CompletedTaskRecord {
     var reflowCount: Int
     var calendarNotes: String?
 
-    init(task: DynocalTask, deletedTask: DeletedTask, completedAt: Date = Date()) {
+    init(task: FloatCalTask, deletedTask: DeletedTask, completedAt: Date = Date()) {
         id = UUID()
         title = task.title
         startDate = task.startDate

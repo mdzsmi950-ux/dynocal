@@ -1,6 +1,6 @@
 //
 //  CalendarService.swift
-//  Dynocal
+//  FloatCal
 //
 //  Created by Maddie Smith on 5/22/26.
 //
@@ -52,7 +52,7 @@ enum TaskSortMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct DynocalTask: Identifiable, Hashable {
+struct FloatCalTask: Identifiable, Hashable {
     let id: String
     let title: String
     let taskDescription: String
@@ -83,7 +83,7 @@ struct DynocalTask: Identifiable, Hashable {
         priority == .high || deadline != nil
     }
 
-    nonisolated static func sorted(_ tasks: [DynocalTask], by mode: TaskSortMode) -> [DynocalTask] {
+    nonisolated static func sorted(_ tasks: [FloatCalTask], by mode: TaskSortMode) -> [FloatCalTask] {
         switch mode {
         case .time:
             tasks.sorted { left, right in
@@ -113,7 +113,7 @@ struct DynocalTask: Identifiable, Hashable {
         }
     }
 
-    nonisolated static func isOrderedBefore(_ left: DynocalTask, _ right: DynocalTask) -> Bool {
+    nonisolated static func isOrderedBefore(_ left: FloatCalTask, _ right: FloatCalTask) -> Bool {
         switch (left.manualOrder, right.manualOrder) {
         case let (leftOrder?, rightOrder?):
             return leftOrder == rightOrder
@@ -143,13 +143,13 @@ struct DynocalTask: Identifiable, Hashable {
 }
 
 struct RescheduleResult {
-    let updatedTasks: [DynocalTask]
-    let deferredTasks: [DynocalTask]
+    let updatedTasks: [FloatCalTask]
+    let deferredTasks: [FloatCalTask]
     let skippedConflicts: Bool
 }
 
 private struct PlannedTaskUpdate {
-    let originalTask: DynocalTask
+    let originalTask: FloatCalTask
     let placement: PlacementResult
     let workDuration: TimeInterval
 }
@@ -251,10 +251,10 @@ struct DeletedTask {
 final class CalendarService {
     static let shared = CalendarService()
 
-    private let appCalendarTitle = "Dynocal"
-    private let legacyCalendarTitle = "FloatCal"
-    private let metadataStart = "DYNOCAL_META_START"
-    private let legacyMetadataStart = "FLOATCAL_META_START"
+    private let appCalendarTitle = "FloatCal"
+    private let legacyCalendarTitle = "Dynocal"
+    private let metadataStart = "FLOATCAL_META_START"
+    private let legacyMetadataStart = "DYNOCAL_META_START"
 
     private let store = EKEventStore()
 
@@ -293,9 +293,9 @@ final class CalendarService {
         location: String,
         isMovable: Bool,
         requiresBusinessHours: Bool
-    ) async throws -> DynocalTask {
+    ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
-        let calendar = try dynocalCalendar()
+        let calendar = try floatCalCalendar()
 
         let taskDuration = TimeInterval(durationMinutes * 60)
         let placement: PlacementResult
@@ -335,7 +335,7 @@ final class CalendarService {
         event.calendar = calendar
         event.location = location
         event.alarms = []
-        event.notes = dynocalNotes(
+        event.notes = floatCalNotes(
             taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
@@ -365,9 +365,9 @@ final class CalendarService {
         location: String,
         isMovable: Bool,
         requiresBusinessHours: Bool
-    ) async throws -> DynocalTask {
+    ) async throws -> FloatCalTask {
         TravelTimeService.shared.beginSchedulingAttempt()
-        let event = try dynocalEvent(id: id)
+        let event = try floatCalEvent(id: id)
         let existingTask = task(from: event)
 
         event.title = title
@@ -405,7 +405,7 @@ final class CalendarService {
         event.startDate = placement.newStartDate
         event.endDate = placedEndDate
         event.location = location
-        event.notes = dynocalNotes(
+        event.notes = floatCalNotes(
             taskDescription: description,
             durationMinutes: durationMinutes,
             category: category,
@@ -425,14 +425,15 @@ final class CalendarService {
         return task(from: event)
     }
 
-    func tasks() throws -> [DynocalTask] {
+    func tasks() throws -> [FloatCalTask] {
         store.refreshSourcesIfNecessary()
+        migrateLegacyCalendarNames()
 
         let calendars = store.calendars(for: .event)
             .filter { $0.title == appCalendarTitle || $0.title == legacyCalendarTitle }
 
         return eventsAcrossPracticalCalendarHistory(in: calendars)
-            .filter { isDynocalEvent($0) }
+            .filter { isFloatCalEvent($0) }
             .sorted { $0.startDate < $1.startDate }
             .map(task(from:))
     }
@@ -471,7 +472,7 @@ final class CalendarService {
     }
 
     func completeTask(id: String) throws -> DeletedTask {
-        let event = try dynocalEvent(id: id)
+        let event = try floatCalEvent(id: id)
         let deletedTask = DeletedTask(
             title: event.title,
             startDate: event.startDate,
@@ -484,8 +485,8 @@ final class CalendarService {
         return deletedTask
     }
 
-    func restoreTask(_ deletedTask: DeletedTask) throws -> DynocalTask {
-        let calendar = try dynocalCalendar()
+    func restoreTask(_ deletedTask: DeletedTask) throws -> FloatCalTask {
+        let calendar = try floatCalCalendar()
 
         let event = EKEvent(eventStore: store)
         event.title = deletedTask.title
@@ -494,7 +495,7 @@ final class CalendarService {
         event.calendar = calendar
         event.location = deletedTask.location
         event.alarms = []
-        event.notes = deletedTask.notes ?? dynocalNotes(
+        event.notes = deletedTask.notes ?? floatCalNotes(
             taskDescription: deletedTask.title,
             durationMinutes: Int(deletedTask.endDate.timeIntervalSince(deletedTask.startDate) / 60),
             category: .none,
@@ -517,16 +518,16 @@ final class CalendarService {
                     && $0.isMovable
                     && !$0.needsDetailsReview
             }
-            .sorted(by: DynocalTask.isOrderedBefore)
+            .sorted(by: FloatCalTask.isOrderedBefore)
 
         var plannedUpdates: [PlannedTaskUpdate] = []
-        var deferredTasks: [DynocalTask] = []
+        var deferredTasks: [FloatCalTask] = []
         var nextCandidateDate = now
         var skippedConflicts = false
         let overdueTaskIDs = Set(overdueTasks.map(\.id))
 
         for task in overdueTasks {
-            let event = try dynocalEvent(id: task.id)
+            let event = try floatCalEvent(id: task.id)
             let duration = storedDuration(for: event)
             do {
                 let placement = try await nextOpenStartDate(
@@ -563,12 +564,12 @@ final class CalendarService {
             }
         }
 
-        var updatedTasks: [DynocalTask] = []
+        var updatedTasks: [FloatCalTask] = []
         do {
             for update in plannedUpdates {
                 let task = update.originalTask
                 let placement = update.placement
-                let event = try dynocalEvent(id: task.id)
+                let event = try floatCalEvent(id: task.id)
                 let travelDuration = TimeInterval(placement.travelTimeMinutes * 60)
 
                 event.startDate = placement.newStartDate
@@ -576,7 +577,7 @@ final class CalendarService {
                     travelDuration + update.workDuration
                 )
                 event.alarms = []
-                event.notes = dynocalNotes(
+                event.notes = floatCalNotes(
                     taskDescription: task.taskDescription,
                     durationMinutes: task.durationMinutes,
                     category: task.category,
@@ -611,10 +612,10 @@ final class CalendarService {
 
     func setManualOrder(taskIDs: [String]) throws {
         for (order, id) in taskIDs.enumerated() {
-            let event = try dynocalEvent(id: id)
+            let event = try floatCalEvent(id: id)
             let task = task(from: event)
 
-            event.notes = dynocalNotes(
+            event.notes = floatCalNotes(
                 taskDescription: task.taskDescription,
                 durationMinutes: task.durationMinutes,
                 category: task.category,
@@ -636,10 +637,10 @@ final class CalendarService {
 
     func clearManualOrder(taskIDs: [String]) throws {
         for id in taskIDs {
-            let event = try dynocalEvent(id: id)
+            let event = try floatCalEvent(id: id)
             let task = task(from: event)
 
-            event.notes = dynocalNotes(
+            event.notes = floatCalNotes(
                 taskDescription: task.taskDescription,
                 durationMinutes: task.durationMinutes,
                 category: task.category,
@@ -659,7 +660,9 @@ final class CalendarService {
         try store.commit()
     }
 
-    private func dynocalCalendar() throws -> EKCalendar {
+    private func floatCalCalendar() throws -> EKCalendar {
+        migrateLegacyCalendarNames()
+
         if let existing = store.calendars(for: .event).first(where: {
             $0.title == appCalendarTitle
                 && $0.allowsContentModifications
@@ -669,21 +672,30 @@ final class CalendarService {
         }
 
         if let iCloudSource = iCloudSource() {
-            return try dynocalCalendar(in: iCloudSource)
+            return try floatCalCalendar(in: iCloudSource)
         }
 
         if let localSource = store.sources.first(where: { $0.sourceType == .local }) {
-            return try dynocalCalendar(in: localSource)
+            return try floatCalCalendar(in: localSource)
         }
 
         if let defaultSource = store.defaultCalendarForNewEvents?.source {
-            return try dynocalCalendar(in: defaultSource)
+            return try floatCalCalendar(in: defaultSource)
         }
 
         throw CalendarServiceError.noWritableCalendarSource
     }
 
-    private func dynocalCalendar(in source: EKSource) throws -> EKCalendar {
+    private func migrateLegacyCalendarNames() {
+        for calendar in store.calendars(for: .event)
+        where calendar.title == legacyCalendarTitle
+            && calendar.allowsContentModifications {
+            calendar.title = appCalendarTitle
+            try? store.saveCalendar(calendar, commit: true)
+        }
+    }
+
+    private func floatCalCalendar(in source: EKSource) throws -> EKCalendar {
         if let existing = store.calendars(for: .event).first(where: {
             $0.title == appCalendarTitle
                 && $0.allowsContentModifications
@@ -700,9 +712,9 @@ final class CalendarService {
         return calendar
     }
 
-    private func dynocalEvent(id: String) throws -> EKEvent {
+    private func floatCalEvent(id: String) throws -> EKEvent {
         guard let event = store.event(withIdentifier: id),
-              isDynocalEvent(event) else {
+              isFloatCalEvent(event) else {
             throw CalendarServiceError.taskNotFound
         }
 
@@ -1154,7 +1166,7 @@ final class CalendarService {
         return calendar.date(byAdding: .minute, value: 5 - remainder, to: roundedDate) ?? date
     }
 
-    private func dynocalNotes(
+    private func floatCalNotes(
         taskDescription: String,
         durationMinutes: Int,
         category: TaskCategory,
@@ -1172,9 +1184,9 @@ final class CalendarService {
         let encodedDescription = Data(taskDescription.utf8).base64EncodedString()
 
         return """
-        Created by Dynocal
+        Created by FloatCal
 
-        DYNOCAL_META_START
+        FLOATCAL_META_START
         version: 6
         itemType: task
         scheduleType: \(isMovable ? "movable" : "fixed")
@@ -1188,11 +1200,11 @@ final class CalendarService {
         reflowCount: \(reflowCount)
         manualOrder: \(manualOrderValue)
         requiresBusinessHours: \(requiresBusinessHours)
-        DYNOCAL_META_END
+        FLOATCAL_META_END
         """
     }
 
-    private func task(from event: EKEvent) -> DynocalTask {
+    private func task(from event: EKEvent) -> FloatCalTask {
         let needsDetailsReview = !hasCompleteTaskMetadata(event.notes)
         let category = metadataValue("category", in: event.notes)
             .flatMap(TaskCategory.init(rawValue:)) ?? .none
@@ -1225,7 +1237,7 @@ final class CalendarService {
             ?? event.title
             ?? "Untitled Task"
 
-        return DynocalTask(
+        return FloatCalTask(
             id: event.eventIdentifier,
             title: event.title,
             taskDescription: taskDescription,
@@ -1258,7 +1270,7 @@ final class CalendarService {
             && metadataValue("priority", in: notes) != nil
     }
 
-    private func isDynocalEvent(_ event: EKEvent) -> Bool {
+    private func isFloatCalEvent(_ event: EKEvent) -> Bool {
         event.calendar.title == appCalendarTitle
             || event.notes?.contains(metadataStart) == true
             || event.notes?.contains(legacyMetadataStart) == true
@@ -1311,9 +1323,9 @@ enum CalendarServiceError: LocalizedError {
         case .noAvailableTime:
             return "No available time was found in the next seven days."
         case .unknownTravelOrigin:
-            return "Dynocal could not confidently tell where you would leave from. Add locations to nearby calendar events or set Home and Work in Settings."
+            return "FloatCal could not confidently tell where you would leave from. Add locations to nearby calendar events or set Home and Work in Settings."
         case .travelRouteUnavailable:
-            return "Dynocal could not calculate a route for this destination. Check the saved addresses and try again."
+            return "FloatCal could not calculate a route for this destination. Check the saved addresses and try again."
         case .unknownBusinessHours:
             return "This task depends on business hours that have not been saved yet. Review the place in Settings."
         case .outsideBusinessHours:

@@ -1,6 +1,6 @@
 //
 //  TaskInterpreter.swift
-//  Dynocal
+//  FloatCal
 //
 
 import Foundation
@@ -247,7 +247,7 @@ final class TaskInterpreter {
         let timeZone = TimeZone.current
         let currentMoment = now.formatted(.iso8601.timeZone(separator: .colon))
         let session = LanguageModelSession(instructions: """
-            Convert a person's task description into scheduling details for Dynocal.
+            Convert a person's task description into scheduling details for FloatCal.
             Use the supplied current date, time, and time zone to resolve relative phrases such as
             tomorrow, Monday evening, or before Tuesday.
             Do not invent live facts such as store hours. When placement depends on unknown current

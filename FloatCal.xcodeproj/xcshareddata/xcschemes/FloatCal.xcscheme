@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "4E665E7B2FC1681400641B62"
-               BuildableName = "Dynocal.app"
-               BlueprintName = "Dynocal"
-               ReferencedContainer = "container:Dynocal.xcodeproj">
+               BuildableName = "FloatCal.app"
+               BlueprintName = "FloatCal"
+               ReferencedContainer = "container:FloatCal.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -36,9 +36,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "4E665E882FC1681800641B62"
-               BuildableName = "DynocalTests.xctest"
-               BlueprintName = "DynocalTests"
-               ReferencedContainer = "container:Dynocal.xcodeproj">
+               BuildableName = "FloatCalTests.xctest"
+               BlueprintName = "FloatCalTests"
+               ReferencedContainer = "container:FloatCal.xcodeproj">
             </BuildableReference>
          </TestableReference>
          <TestableReference
@@ -47,9 +47,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "4E665E922FC1681800641B62"
-               BuildableName = "DynocalUITests.xctest"
-               BlueprintName = "DynocalUITests"
-               ReferencedContainer = "container:Dynocal.xcodeproj">
+               BuildableName = "FloatCalUITests.xctest"
+               BlueprintName = "FloatCalUITests"
+               ReferencedContainer = "container:FloatCal.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -69,9 +69,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4E665E7B2FC1681400641B62"
-            BuildableName = "Dynocal.app"
-            BlueprintName = "Dynocal"
-            ReferencedContainer = "container:Dynocal.xcodeproj">
+            BuildableName = "FloatCal.app"
+            BlueprintName = "FloatCal"
+            ReferencedContainer = "container:FloatCal.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -86,9 +86,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4E665E7B2FC1681400641B62"
-            BuildableName = "Dynocal.app"
-            BlueprintName = "Dynocal"
-            ReferencedContainer = "container:Dynocal.xcodeproj">
+            BuildableName = "FloatCal.app"
+            BlueprintName = "FloatCal"
+            ReferencedContainer = "container:FloatCal.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>
