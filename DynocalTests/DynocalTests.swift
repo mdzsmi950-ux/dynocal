@@ -165,6 +165,39 @@ struct DynocalTests {
         #expect(origin == .lifestyle(.home, "100 Home Street"))
     }
 
+    @Test func saleWindowCreatesNotBeforeDateAndEndOfDayDeadline() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 7, day: 25, hour: 19)
+        )!
+
+        let range = TaskTextConstraints.dateRange(
+            in: "Get cat litter during the Costco sale from August 27th to September 17th.",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: range!.earliestStart
+            ) == DateComponents(year: 2026, month: 8, day: 27, hour: 9, minute: 0)
+        )
+        #expect(
+            calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: range!.deadline
+            ) == DateComponents(year: 2026, month: 9, day: 17, hour: 23, minute: 59)
+        )
+    }
+
+    @Test func timeOfDayMustBeExplicit() {
+        #expect(!TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter during the sale"))
+        #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter in the evening"))
+        #expect(TaskTextConstraints.hasExplicitTimeOfDay(in: "Buy cat litter after 5 p.m."))
+    }
+
     private func task(
         id: String,
         priority: TaskPriority,

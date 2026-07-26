@@ -48,6 +48,7 @@ struct ContentView: View {
     @State private var isShowingClarification = false
     @State private var durationNeedsConfirmation = false
     @State private var locationNeedsConfirmation = false
+    @State private var travelNeedsConfirmation = false
     @State private var dictationPrefix = ""
     @StateObject private var speechInput = SpeechInputService()
     @AppStorage("taskSortMode") private var taskSortModeRawValue = TaskSortMode.priority.rawValue
@@ -228,21 +229,13 @@ struct ContentView: View {
     private var tasksSection: some View {
         Section {
             if tasks.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("No Tasks")
                         .font(.headline)
 
-                    Text("Create a task to put it on your calendar.")
+                    Label("Tap + above to add a task.", systemImage: "plus")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-
-                    Button {
-                        beginNewTask()
-                    } label: {
-                        Label("New Task", systemImage: "plus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 4)
                 }
                 .padding(.vertical, 10)
             } else {
@@ -345,6 +338,7 @@ struct ContentView: View {
                             )
                         }
                         .tint(speechInput.isRecording ? .red : .accentColor)
+                        .buttonStyle(.borderless)
 
                         Spacer()
 
@@ -354,7 +348,9 @@ struct ContentView: View {
                                 interpretTaskDescription()
                             } label: {
                                 Label(
-                                    isInterpretingTask ? "Understanding..." : "Fill Details",
+                                    isInterpretingTask
+                                        ? "Analyzing..."
+                                        : "Analyze with Apple Intelligence",
                                     systemImage: "apple.intelligence"
                                 )
                             }
@@ -363,22 +359,24 @@ struct ContentView: View {
                                     || isInterpretingTask
                                     || speechInput.isRecording
                             )
+                            .buttonStyle(.borderless)
                         case .unavailable:
                             Button {
                                 enterManualMode()
                             } label: {
                                 Label("Enter Manually", systemImage: "slider.horizontal.3")
                             }
+                            .buttonStyle(.borderless)
                         }
                     }
 
                     if let message = speechInput.message ?? taskInterpretationMessage {
                         Label(
                             message,
-                            systemImage: message.hasPrefix("Filled") ? "checkmark.circle.fill" : "info.circle"
+                            systemImage: message.hasPrefix("Analyzed") ? "checkmark.circle.fill" : "info.circle"
                         )
                         .font(.footnote)
-                        .foregroundStyle(message.hasPrefix("Filled") ? .green : .secondary)
+                        .foregroundStyle(message.hasPrefix("Analyzed") ? .green : .secondary)
                     }
                 }
 
@@ -464,12 +462,15 @@ struct ContentView: View {
                     originAddress: clarificationOriginAddress,
                     durationNeedsConfirmation: durationNeedsConfirmation,
                     locationNeedsConfirmation: locationNeedsConfirmation,
+                    travelNeedsConfirmation: travelNeedsConfirmation,
                     durationMinutes: $newTaskDurationMinutes,
+                    travelTimeMinutes: $newTaskTravelTimeMinutes,
                     location: $newTaskLocation,
                     isMovable: $newTaskIsMovable
                 ) {
                     durationNeedsConfirmation = false
                     locationNeedsConfirmation = false
+                    travelNeedsConfirmation = false
                     isShowingTaskDetails = true
                 }
                 .environmentObject(preferences)
@@ -551,6 +552,7 @@ struct ContentView: View {
         interpretedAsFixed = false
         durationNeedsConfirmation = false
         locationNeedsConfirmation = false
+        travelNeedsConfirmation = false
         isShowingClarification = false
         isShowingTaskDetails = false
         dictationPrefix = ""
@@ -580,6 +582,7 @@ struct ContentView: View {
         interpretedAsFixed = false
         durationNeedsConfirmation = false
         locationNeedsConfirmation = false
+        travelNeedsConfirmation = false
         isShowingTaskDetails = true
         dictationPrefix = ""
         isShowingNewTaskSheet = true
@@ -651,6 +654,7 @@ struct ContentView: View {
                 newTaskIsMovable = !draft.isFixed
                 durationNeedsConfirmation = !draft.durationWasExplicit
                 locationNeedsConfirmation = draft.locationNeedsConfirmation
+                travelNeedsConfirmation = draft.travelNeedsConfirmation
 
                 if let startDate = draft.startDate {
                     newTaskStartDate = startDate
@@ -673,12 +677,14 @@ struct ContentView: View {
                 }
 
                 isShowingTaskDetails = true
-                isShowingClarification = durationNeedsConfirmation || locationNeedsConfirmation
+                isShowingClarification = durationNeedsConfirmation
+                    || locationNeedsConfirmation
+                    || travelNeedsConfirmation
 
                 if draft.needsBusinessHoursLookup {
-                    taskInterpretationMessage = "Filled what I could. Confirm the deadline because current business hours aren’t available."
+                    taskInterpretationMessage = "Analyzed with Apple Intelligence. Confirm the location and timing because current business hours aren’t available."
                 } else {
-                    taskInterpretationMessage = "Filled details with Apple Intelligence. Review before creating."
+                    taskInterpretationMessage = "Analyzed with Apple Intelligence. Review before creating."
                 }
             } catch {
                 taskInterpretationMessage = "Apple Intelligence couldn’t fill the details: \(error.localizedDescription)"
@@ -1101,7 +1107,9 @@ private struct TaskClarificationView: View {
     let originAddress: String
     let durationNeedsConfirmation: Bool
     let locationNeedsConfirmation: Bool
+    let travelNeedsConfirmation: Bool
     @Binding var durationMinutes: Int
+    @Binding var travelTimeMinutes: Int
     @Binding var location: String
     @Binding var isMovable: Bool
     let onConfirm: () -> Void
@@ -1198,6 +1206,23 @@ private struct TaskClarificationView: View {
                         Text("Which \(locationQuery)?")
                     } footer: {
                         Text("Your choice becomes the usual \(locationQuery) from \(origin.rawValue). Change it anytime in Settings.")
+                    }
+                }
+
+                if travelNeedsConfirmation {
+                    Section {
+                        Stepper(
+                            travelTimeMinutes == 0
+                                ? "Travel Time: Not Set"
+                                : "Travel Time: \(travelTimeMinutes) min",
+                            value: $travelTimeMinutes,
+                            in: 0...240,
+                            step: 5
+                        )
+                    } header: {
+                        Text("How much travel time should I reserve?")
+                    } footer: {
+                        Text("Dynocal could not reliably estimate the route yet. You can adjust this after choosing the location.")
                     }
                 }
 

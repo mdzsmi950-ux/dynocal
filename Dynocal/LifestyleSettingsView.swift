@@ -126,6 +126,16 @@ struct LifestyleSettingsView: View {
                             .onDelete(perform: preferences.removePlaces)
                         }
                     }
+
+                    Section("Privacy & About") {
+                        NavigationLink {
+                            PrivacyPolicyView()
+                        } label: {
+                            Label("Privacy Policy", systemImage: "hand.raised")
+                        }
+
+                        LabeledContent("Version", value: appVersion)
+                    }
                 }
             }
             .navigationTitle(isOnboarding ? "Make Dynocal Yours" : "Settings")
@@ -146,6 +156,16 @@ struct LifestyleSettingsView: View {
                 }
             }
         }
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "1.0"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "1"
+        return "\(version) (\(build))"
     }
 
     private var weekdayPicker: some View {

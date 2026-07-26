@@ -9,6 +9,8 @@ struct PlaceCandidate: Identifiable, Hashable {
 
 @MainActor
 final class PlaceSearchService: ObservableObject {
+    private let searchRadiusMeters: CLLocationDistance = 20 * 1_609.344
+
     @Published private(set) var results: [PlaceCandidate] = []
     @Published private(set) var isSearching = false
     @Published private(set) var message: String?
@@ -21,16 +23,36 @@ final class PlaceSearchService: ObservableObject {
         message = nil
 
         let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = origin.isEmpty
-            ? trimmedQuery
-            : "\(trimmedQuery) near \(origin)"
+        request.naturalLanguageQuery = trimmedQuery
         request.resultTypes = .pointOfInterest
 
         do {
+            if let originCoordinate = await coordinate(for: origin) {
+                request.region = MKCoordinateRegion(
+                    center: originCoordinate,
+                    latitudinalMeters: searchRadiusMeters * 2,
+                    longitudinalMeters: searchRadiusMeters * 2
+                )
+            }
+
             let response = try await MKLocalSearch(request: request).start()
             var seen = Set<String>()
 
             results = response.mapItems.compactMap { item in
+                if let originCoordinate = request.region.center.nonZeroCoordinate {
+                    let originLocation = CLLocation(
+                        latitude: originCoordinate.latitude,
+                        longitude: originCoordinate.longitude
+                    )
+                    let resultLocation = CLLocation(
+                        latitude: item.location.coordinate.latitude,
+                        longitude: item.location.coordinate.longitude
+                    )
+                    guard resultLocation.distance(from: originLocation) <= searchRadiusMeters else {
+                        return nil
+                    }
+                }
+
                 let name = item.name ?? trimmedQuery
                 let address = item.address?.fullAddress
                     ?? ""
@@ -50,5 +72,27 @@ final class PlaceSearchService: ObservableObject {
         }
 
         isSearching = false
+    }
+
+    private func coordinate(for address: String) async -> CLLocationCoordinate2D? {
+        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAddress.isEmpty else { return nil }
+
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = trimmedAddress
+        request.resultTypes = [.address, .pointOfInterest]
+
+        return try? await MKLocalSearch(request: request)
+            .start()
+            .mapItems
+            .first?
+            .location
+            .coordinate
+    }
+}
+
+private extension CLLocationCoordinate2D {
+    var nonZeroCoordinate: CLLocationCoordinate2D? {
+        latitude == 0 && longitude == 0 ? nil : self
     }
 }
