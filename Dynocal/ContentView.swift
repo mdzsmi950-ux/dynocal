@@ -432,7 +432,7 @@ struct ContentView: View {
                             }
                         }
 
-                        Toggle("Can Reflow move this task?", isOn: $newTaskIsMovable)
+                        Toggle("Can I reflow this task?", isOn: $newTaskIsMovable)
 
                         if !interpretedTimePreference.isEmpty {
                             LabeledContent("Preferred Time", value: interpretedTimePreference)
@@ -1202,7 +1202,7 @@ private struct TaskClarificationView: View {
                 }
 
                 Section {
-                    Toggle("Can Reflow move this task?", isOn: $isMovable)
+                    Toggle("Can I reflow this task?", isOn: $isMovable)
                 } footer: {
                     Text("This applies only to this task. Dynocal never turns it into a general preference.")
                 }

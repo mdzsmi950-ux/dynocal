@@ -106,6 +106,65 @@ struct DynocalTests {
         #expect(profile.expectedOrigin(at: saturdayAfternoon, calendar: calendar) == .home)
     }
 
+    @Test func recentCalendarLocationOverridesLifestyleOrigin() {
+        let departure = Date(timeIntervalSince1970: 20_000)
+        var profile = LifestyleProfile()
+        profile.homeAddress = "100 Home Street"
+        profile.workAddress = "200 Work Avenue"
+        let gymEvent = CalendarContextEvent(
+            start: departure.addingTimeInterval(-5_400),
+            end: departure.addingTimeInterval(-1_800),
+            location: "Neighborhood Gym"
+        )
+
+        let origin = SchedulingContextResolver.origin(
+            at: departure,
+            events: [gymEvent],
+            profile: profile
+        )
+
+        #expect(origin == .calendarEvent("Neighborhood Gym"))
+    }
+
+    @Test func recentEventWithoutLocationMakesOriginUnknown() {
+        let departure = Date(timeIntervalSince1970: 20_000)
+        var profile = LifestyleProfile()
+        profile.homeAddress = "100 Home Street"
+        let event = CalendarContextEvent(
+            start: departure.addingTimeInterval(-5_400),
+            end: departure.addingTimeInterval(-1_800),
+            location: nil
+        )
+
+        let origin = SchedulingContextResolver.origin(
+            at: departure,
+            events: [event],
+            profile: profile
+        )
+
+        #expect(origin == .unknown)
+    }
+
+    @Test func expiredCalendarAnchorFallsBackToLifestyleOrigin() {
+        let departure = Date(timeIntervalSince1970: 20_000)
+        var profile = LifestyleProfile()
+        profile.homeAddress = "100 Home Street"
+        profile.protectWorkHours = false
+        let oldEvent = CalendarContextEvent(
+            start: departure.addingTimeInterval(-18_000),
+            end: departure.addingTimeInterval(-10_800),
+            location: "Old Location"
+        )
+
+        let origin = SchedulingContextResolver.origin(
+            at: departure,
+            events: [oldEvent],
+            profile: profile
+        )
+
+        #expect(origin == .lifestyle(.home, "100 Home Street"))
+    }
+
     private func task(
         id: String,
         priority: TaskPriority,

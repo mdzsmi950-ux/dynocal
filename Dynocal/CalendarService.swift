@@ -145,6 +145,58 @@ private struct BlockedInterval {
     let end: Date
 }
 
+struct CalendarContextEvent: Equatable {
+    let start: Date
+    let end: Date
+    let location: String?
+}
+
+enum SchedulingOrigin: Equatable {
+    case calendarEvent(String)
+    case lifestyle(PlaceOrigin, String)
+    case unknown
+}
+
+struct SchedulingContextResolver {
+    nonisolated static let eventAnchorWindow: TimeInterval = 2 * 60 * 60
+
+    nonisolated static func origin(
+        at departureDate: Date,
+        events: [CalendarContextEvent],
+        profile: LifestyleProfile,
+        calendar: Calendar = .current
+    ) -> SchedulingOrigin {
+        if let previousEvent = events
+            .filter({
+                $0.end <= departureDate
+                    && departureDate.timeIntervalSince($0.end) <= eventAnchorWindow
+            })
+            .max(by: { $0.end < $1.end }) {
+            let location = previousEvent.location?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            return location.isEmpty ? .unknown : .calendarEvent(location)
+        }
+
+        let expectedOrigin = profile.expectedOrigin(at: departureDate, calendar: calendar)
+        let address: String
+
+        switch expectedOrigin {
+        case .home:
+            address = profile.homeAddress
+        case .work:
+            address = profile.workAddress
+        case .either:
+            address = ""
+        }
+
+        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAddress.isEmpty
+            ? .unknown
+            : .lifestyle(expectedOrigin, trimmedAddress)
+    }
+}
+
 struct DeletedTask {
     let title: String
     let startDate: Date
@@ -205,10 +257,11 @@ final class CalendarService {
         let placedStartDate: Date
 
         if isMovable {
-            let placement = nextOpenStartDate(
+            let placement = try nextOpenStartDate(
                 from: startDate,
                 duration: taskDuration + travelDuration,
                 category: category,
+                destination: location,
                 excludingEventIDs: []
             )
             placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
@@ -265,10 +318,11 @@ final class CalendarService {
         let placedStartDate: Date
 
         if isMovable {
-            let placement = nextOpenStartDate(
+            let placement = try nextOpenStartDate(
                 from: startDate,
                 duration: taskDuration + travelDuration,
                 category: category,
+                destination: location,
                 excludingEventIDs: [id]
             )
             placedStartDate = placement.newStartDate.addingTimeInterval(travelDuration)
@@ -373,10 +427,11 @@ final class CalendarService {
             let event = try dynocalEvent(id: task.id)
             let duration = storedDuration(for: event)
             let travelDuration = TimeInterval(task.travelTimeMinutes * 60)
-            let placement = nextOpenStartDate(
+            let placement = try nextOpenStartDate(
                 from: nextCandidateDate,
                 duration: duration + travelDuration,
                 category: task.category,
+                destination: task.location,
                 excludingEventIDs: overdueTaskIDs
             )
 
@@ -524,24 +579,45 @@ final class CalendarService {
         from targetStartDate: Date,
         duration: TimeInterval,
         category: TaskCategory,
+        destination: String,
         excludingEventIDs: Set<String>
-    ) -> PlacementResult {
+    ) throws -> PlacementResult {
         let searchEndDate = Calendar.current.date(byAdding: .day, value: 7, to: targetStartDate)
             ?? targetStartDate.addingTimeInterval(7 * 24 * 60 * 60)
+        let contextStartDate = targetStartDate.addingTimeInterval(
+            -SchedulingContextResolver.eventAnchorWindow
+        )
         let calendars = store.calendars(for: .event)
-        let predicate = store.predicateForEvents(withStart: targetStartDate, end: searchEndDate, calendars: calendars)
-        let eventIntervals = store.events(matching: predicate)
+        let predicate = store.predicateForEvents(
+            withStart: contextStartDate,
+            end: searchEndDate,
+            calendars: calendars
+        )
+        let calendarEvents = store.events(matching: predicate)
             .filter { event in
                 let isExcluded = event.eventIdentifier.map(excludingEventIDs.contains) ?? false
 
                 return !isExcluded
                     && !event.isAllDay
-                    && event.availability != .free
             }
+        let eventIntervals = calendarEvents
+            .filter { $0.availability != .free }
             .compactMap { event -> BlockedInterval? in
                 guard let start = event.startDate, let end = event.endDate else { return nil }
                 return BlockedInterval(start: start, end: end)
             }
+        let contextEvents = calendarEvents.compactMap { event -> CalendarContextEvent? in
+            guard let start = event.startDate, let end = event.endDate else { return nil }
+            let eventLocation = event.location?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let structuredTitle = event.structuredLocation?.title?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return CalendarContextEvent(
+                start: start,
+                end: end,
+                location: eventLocation?.isEmpty == false ? eventLocation : structuredTitle
+            )
+        }
         let blockedIntervals = (
             eventIntervals + lifestyleBlockedIntervals(
                 from: targetStartDate,
@@ -553,28 +629,41 @@ final class CalendarService {
 
         var candidateStartDate = roundedUpToNextFiveMinutes(targetStartDate)
         let firstCandidateStartDate = candidateStartDate
+        let needsKnownOrigin = !destination
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
 
-        for interval in blockedIntervals {
-            let busyStartDate = interval.start
-            let busyEndDate = interval.end
+        while candidateStartDate < searchEndDate {
             let candidateEndDate = candidateStartDate.addingTimeInterval(duration)
 
-            if candidateEndDate <= busyStartDate {
-                return PlacementResult(
-                    newStartDate: candidateStartDate,
-                    skippedConflict: candidateStartDate > firstCandidateStartDate
-                )
+            if let conflict = blockedIntervals.first(where: {
+                candidateStartDate < $0.end && candidateEndDate > $0.start
+            }) {
+                candidateStartDate = roundedUpToNextFiveMinutes(conflict.end)
+                continue
             }
 
-            if candidateStartDate < busyEndDate {
-                candidateStartDate = roundedUpToNextFiveMinutes(busyEndDate)
+            if needsKnownOrigin,
+               SchedulingContextResolver.origin(
+                    at: candidateStartDate,
+                    events: contextEvents,
+                    profile: PreferencesStore.shared.profile
+               ) == .unknown {
+                candidateStartDate = candidateStartDate.addingTimeInterval(5 * 60)
+                continue
             }
+
+            return PlacementResult(
+                newStartDate: candidateStartDate,
+                skippedConflict: candidateStartDate > firstCandidateStartDate
+            )
         }
 
-        return PlacementResult(
-            newStartDate: candidateStartDate,
-            skippedConflict: candidateStartDate > firstCandidateStartDate
-        )
+        if needsKnownOrigin {
+            throw CalendarServiceError.unknownTravelOrigin
+        }
+
+        throw CalendarServiceError.noAvailableTime
     }
 
     private func lifestyleBlockedIntervals(
@@ -754,6 +843,8 @@ enum CalendarServiceError: LocalizedError {
     case noWritableCalendarSource
     case taskNotFound
     case noRoomBeforeDeadline
+    case noAvailableTime
+    case unknownTravelOrigin
 
     var errorDescription: String? {
         switch self {
@@ -763,6 +854,10 @@ enum CalendarServiceError: LocalizedError {
             return "That task could not be found."
         case .noRoomBeforeDeadline:
             return "No available time fits before this task’s deadline. Adjust the deadline, duration, or protected hours."
+        case .noAvailableTime:
+            return "No available time was found in the next seven days."
+        case .unknownTravelOrigin:
+            return "Dynocal could not confidently tell where you would leave from. Add locations to nearby calendar events or set Home and Work in Settings."
         }
     }
 }
